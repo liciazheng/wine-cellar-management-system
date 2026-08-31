@@ -1,0 +1,13 @@
+# DB Browser for SQLite session/project files
+*.sqbpro
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Office lock files
+~$*
+
+# OS
+Thumbs.db
+desktop.ini
+.DS_Store
