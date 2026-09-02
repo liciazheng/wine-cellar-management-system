@@ -1,5 +1,7 @@
 # Wine Cellar Management System
 
+[![tests](https://github.com/liciazheng/wine-cellar-management-system/actions/workflows/ci.yml/badge.svg)](https://github.com/liciazheng/wine-cellar-management-system/actions/workflows/ci.yml)
+
 A relational database for tracking a private wine collection — what is in the cellar, where it is stored, what it cost, and how each bottle tasted over time.
 
 SQLite, no dependencies. Clone it and open the `.db`.
@@ -161,6 +163,8 @@ sql/
   03_queries.sql     the eight queries
 database/
   wine_collection.db ready-to-open SQLite database, built from the scripts above
+tests/
+  test_database.py   23 tests over the schema, constraints and queries
 ```
 
 ## Running it
@@ -174,6 +178,23 @@ sqlite3 wine_collection.db < sql/01_schema.sql
 sqlite3 wine_collection.db < sql/02_seed_data.sql
 sqlite3 wine_collection.db < sql/03_queries.sql
 ```
+
+## Tests
+
+```bash
+pip install pytest
+pytest
+```
+
+23 tests, and they check more than "does it run":
+
+- The SQL scripts build the schema they claim, and the **committed `.db` has not drifted** from them — same columns, same types, same row counts.
+- **Every constraint actually rejects bad data.** A rating of 0 or 6, a `drink_until` earlier than `drink_from`, a wine with no name, a wine owned by a nonexistent collector, a tasting by a nonexistent taster — each is asserted to raise `IntegrityError` rather than being silently stored.
+- All eight queries execute and return rows.
+- Q2 is checked both ways: every bottle it returns is inside its drinking window, and every bottle it excludes really is closed or not yet open.
+- The design intents hold in the data — shared tastings exist, and at least one wine has three dated tastings so the evolution case is real.
+- The bug this schema was fixed to avoid stays fixed: no appellation word (`DOCG`, `Riserva`, `Classico` …) has leaked back into `grape_varietal`.
+- No cellar is over capacity, no drinking window starts before its vintage, and every collector email is on the reserved `example.com` domain.
 
 ## About the data
 

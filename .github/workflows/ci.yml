@@ -1,0 +1,45 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pytest
+        run: pip install pytest
+
+      - name: Run tests
+        run: pytest -v
+
+      # Proves the three commands in the README's "Running it" section work
+      # against a real sqlite3 CLI, not just via Python. Drift between the
+      # scripts and the committed .db is covered by the test suite.
+      - name: Rebuild the database using the documented commands
+        run: |
+          sqlite3 /tmp/rebuilt.db < sql/01_schema.sql
+          sqlite3 /tmp/rebuilt.db < sql/02_seed_data.sql
+          sqlite3 /tmp/rebuilt.db < sql/03_queries.sql
+
+      - name: Compare the rebuilt schema against the committed database
+        run: |
+          rebuilt=$(sqlite3 /tmp/rebuilt.db \
+            "SELECT sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY name")
+          shipped=$(sqlite3 database/wine_collection.db \
+            "SELECT sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY name")
+          if [ "$rebuilt" != "$shipped" ]; then
+            echo "::error::database/wine_collection.db has drifted from sql/"
+            diff <(echo "$rebuilt") <(echo "$shipped") || true
+            exit 1
+          fi
+          echo "Committed database matches the SQL scripts"
