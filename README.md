@@ -24,11 +24,63 @@ Five tables, third normal form:
 | `Wine` | 15 | Bottles — name, grape, appellation, vintage, price, quantity, drinking window |
 | `Tasting` | 18 | Dated tasting events — taster, 1–5 rating, notes, food pairing |
 
+```mermaid
+erDiagram
+    Collector ||--o{ Wine    : owns
+    Producer  ||--o{ Wine    : makes
+    Location  ||--o{ Wine    : stores
+    Wine      ||--o{ Tasting : "is tasted in"
+    Collector ||--o{ Tasting : "writes note for"
+
+    Collector {
+        INTEGER collector_id PK
+        TEXT    name
+        TEXT    email
+    }
+
+    Producer {
+        INTEGER producer_id   PK
+        TEXT    producer_name
+        TEXT    region
+        TEXT    country
+    }
+
+    Location {
+        INTEGER location_id PK
+        TEXT    cellar_name
+        REAL    temperature
+        REAL    humidity
+        INTEGER capacity
+    }
+
+    Wine {
+        INTEGER wine_id         PK
+        INTEGER FK_collector_id FK "owner"
+        INTEGER FK_producer_id  FK
+        INTEGER FK_location_id  FK
+        TEXT    wine_name          "label on the bottle"
+        TEXT    grape_varietal     "e.g. Sangiovese"
+        TEXT    appellation        "e.g. Chianti Classico DOCG"
+        INTEGER vintage_year
+        TEXT    purchase_date
+        REAL    purchase_price
+        INTEGER quantity
+        INTEGER drink_from         "CHECK drink_until >= drink_from"
+        INTEGER drink_until
+    }
+
+    Tasting {
+        INTEGER tasting_id   PK
+        INTEGER FK_wine_id   FK
+        INTEGER FK_taster_id FK "who poured it"
+        TEXT    tasting_date
+        INTEGER rating          "CHECK between 1 and 5"
+        TEXT    tasting_notes
+        TEXT    food_pairing
+    }
 ```
-Collector ──┬──< Wine ──< Tasting >── Collector
-Producer  ──┤                          (as taster)
-Location  ──┘
-```
+
+`Collector` reaches `Tasting` twice over: once as the owner of the bottle (through `Wine`) and once as the author of the note (directly). Q7 is the query that uses both at the same time.
 
 `Wine` is the central table, carrying three foreign keys. `Tasting` is many-to-one against `Wine`, so a bottle can be tasted repeatedly and its evolution tracked — wine 1 has three tastings across two years, climbing from 4 to 5 as it opened up.
 
