@@ -142,10 +142,94 @@ def test_tasting_cannot_reference_a_missing_taster(db):
 def test_every_query_executes(db):
     sql = (SQL / "03_queries.sql").read_text(encoding="utf-8")
     queries = [s for s in split_statements(sql) if "SELECT" in s.upper()]
-    assert len(queries) == 8
+    assert len(queries) == 11
     for i, query in enumerate(queries, 1):
         rows = db.execute(query).fetchall()
         assert rows, f"Q{i} returned no rows"
+
+
+# --- the views ------------------------------------------------------------
+
+def test_views_exist(db):
+    views = {r[0] for r in db.execute(
+        "SELECT name FROM sqlite_master WHERE type='view'")}
+    assert views == {"WineStock", "CellarOccupancy"}
+
+
+def test_winestock_remaining_matches_the_raw_subtraction(db):
+    """
+    The view exists to stop that subtraction being retyped in every query, so
+    it had better agree with the long way round for every wine.
+    """
+    from_view = dict(db.execute(
+        "SELECT wine_id, bottles_remaining FROM WineStock"))
+    the_long_way = dict(db.execute(f"SELECT wine_id, {REMAINING} FROM Wine"))
+    assert from_view == the_long_way
+
+
+def test_winestock_covers_every_wine_including_untouched_ones(db):
+    """A LEFT JOIN, not a JOIN: a wine nobody has opened still has stock."""
+    assert db.execute("SELECT COUNT(*) FROM WineStock").fetchone()[0] == \
+           db.execute("SELECT COUNT(*) FROM Wine").fetchone()[0]
+    untouched = db.execute(
+        "SELECT COUNT(*) FROM WineStock WHERE bottles_drunk = 0").fetchone()[0]
+    assert untouched > 0
+
+
+def test_is_finished_flags_exactly_the_empty_wines(db):
+    flagged = {r[0] for r in db.execute(
+        "SELECT wine_id FROM WineStock WHERE is_finished = 1")}
+    empty = {r[0] for r in db.execute(
+        "SELECT wine_id FROM WineStock WHERE bottles_remaining = 0")}
+    assert flagged == empty
+    assert flagged, "the sample data should contain at least one finished wine"
+
+
+def test_cellar_occupancy_agrees_with_winestock(db):
+    per_cellar = dict(db.execute(
+        "SELECT location_id, bottles_on_hand FROM CellarOccupancy"))
+    rolled_up = dict(db.execute("""
+        SELECT FK_location_id, SUM(bottles_remaining)
+        FROM WineStock GROUP BY FK_location_id
+    """))
+    assert per_cellar == rolled_up
+
+
+def test_cellar_occupancy_never_exceeds_capacity(db):
+    over = db.execute("""
+        SELECT cellar_name FROM CellarOccupancy
+        WHERE bottles_on_hand > capacity
+    """).fetchall()
+    assert over == []
+
+
+def test_q9_verdict_agrees_with_its_own_projection(db):
+    """
+    Q9's verdict is the one piece of judgement in the query file. It is derived
+    from runs_out_around and drink_until, both of which the query also reports,
+    so the three columns must not be able to contradict each other.
+    """
+    sql = (SQL / "03_queries.sql").read_text(encoding="utf-8")
+    q9 = [s for s in split_statements(sql) if "runs_out_around" in s][0]
+
+    cursor = db.execute(q9)
+    columns = [d[0] for d in cursor.description]
+    rows = [dict(zip(columns, r)) for r in cursor.fetchall()]
+
+    judged = [r for r in rows if r["verdict"] is not None]
+    assert judged, "no wine got a verdict, so nothing was checked"
+    assert any(r["verdict"] == "drinking too slowly" for r in judged)
+    assert any(r["verdict"] == "on track" for r in judged)
+
+    for row in judged:
+        runs_out = int(row["runs_out_around"])
+        expected = "drinking too slowly" if runs_out > row["drink_until"] else "on track"
+        assert row["verdict"] == expected, row["wine_name"]
+
+    # Finished and untouched wines carry no verdict, because there is no rate
+    # to project from.
+    for row in (r for r in rows if r["verdict"] is None):
+        assert row["runs_out_around"] in ("finished", "untouched")
 
 
 def test_drink_now_query_only_returns_open_windows(db):

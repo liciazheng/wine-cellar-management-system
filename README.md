@@ -130,20 +130,25 @@ A companion trigger covers `UPDATE`, excluding the row being edited from the run
 
 Foreign keys, the drinking window and `Consumption.FK_wine_id` are indexed.
 
+**Remaining stock is a view, not a repeated subquery.** Almost every question worth asking needs it, and spelling it out inline meant retyping the same correlated subquery in each one. `WineStock` does it once, with a `LEFT JOIN` onto a single aggregate over `Consumption` — so the sum runs once per wine rather than once per row of the outer query, and a wine nobody has opened still appears with its full stock. `CellarOccupancy` rolls that up per location. Both are in [`sql/01_schema.sql`](sql/01_schema.sql).
+
 ## Queries
 
-[`sql/03_queries.sql`](sql/03_queries.sql) holds eight queries:
+[`sql/03_queries.sql`](sql/03_queries.sql) holds eleven queries:
 
 | | Query | Demonstrates |
 |---|---|---|
-| Q1 | Full collection inventory | 3-table join |
+| Q1 | Full collection inventory | 3-table join through the stock view |
 | Q2 | **What should I drink this year?** | `BETWEEN` on the window, `CASE` urgency bucket, 4-table join |
 | Q3 | Wine ranking by average score | `GROUP BY` + `HAVING` |
 | Q4 | Holdings by grape varietal | aggregation over the split-out varietal column |
-| Q5 | Cellar utilisation | correlated subquery for remaining stock, against capacity |
+| Q5 | Cellar utilisation | straight from `CellarOccupancy` |
 | Q6 | Highly rated tastings, with author | two joins to `Collector` from one row |
 | Q7 | Notes on someone else's bottle | self-referencing filter on the same two joins |
-| Q8 | Collector portfolio value | `COUNT DISTINCT`, `ROUND`, derived totals |
+| Q8 | Collector portfolio: bought, drunk, held | derived totals on both stock columns |
+| Q9 | **Drink-down rate and projected run-out** | `julianday` date arithmetic, nested `CASE` verdict |
+| Q10 | The drinking log by year | `strftime` grouping, `COUNT` over a nullable FK |
+| Q11 | Wines that are gone — restock? | finished stock joined to how it rated |
 
 ### Q2 — what should I drink this year
 
@@ -192,17 +197,45 @@ Bottles on hand, since this one is about how full the racks are. Both columns ar
 | Basement Storage | 17 | 8 | 200 | 4.0% |
 | Main Cellar | 18 | 9 | 500 | 1.8% |
 
+### Q9 — am I drinking these fast enough?
+
+The most useful thing the consumption table makes possible. Rate is bottles drunk per year since purchase; projecting the remaining stock forward at that rate gives a run-out year, which is then compared against the drinking window:
+
+| Wine | Left | Bottles/year | Runs out | Window closes | Verdict |
+|---|---|---|---|---|---|
+| Valpolicella Superiore | 3 | 0.90 | 2029 | 2028 | **drinking too slowly** |
+| Chianti Classico (Antinori) | 1 | 0.77 | 2027 | 2028 | on track |
+| Chianti Classico Riserva | 5 | 0.73 | 2033 | 2029 | **drinking too slowly** |
+| Amarone della Valpolicella | 4 | 0.72 | 2032 | 2036 | on track |
+| Bolgheri Rosso | 4 | 0.33 | 2038 | 2030 | **drinking too slowly** |
+| Barbaresco (Gaja, 2018) | 3 | 0.28 | 2037 | 2033 | **drinking too slowly** |
+| … | | | | | |
+
+Seven of the thirteen wines with a drinking rate will still be sitting in the cellar after their window shuts. Bolgheri Rosso is the worst: at the current pace the last bottle gets opened around 2038, eight years past its best. The opposite failure also shows up — Solaia was drunk to zero in 2025 with its window running to 2041.
+
+Wines with no rate get no verdict: one has never been opened, and a finished wine has nothing left to project.
+
+### Q10 — the drinking log
+
+| Year | Bottles opened | With a note | Without | Average rating |
+|---|---|---|---|---|
+| 2023 | 6 | 6 | 0 | 4.33 |
+| 2024 | 14 | 12 | 2 | 4.33 |
+| 2025 | 7 | 0 | 7 | — |
+
+The note-taking stopped in 2025 while the drinking did not. That gap is the whole reason `FK_tasting_id` is nullable — a schema that required a note per bottle could not record this year at all.
+
 ## Layout
 
 ```
 sql/
-  01_schema.sql      tables, keys, constraints, triggers, indexes
+  01_schema.sql      tables, keys, constraints, triggers, indexes, views
   02_seed_data.sql   sample data
-  03_queries.sql     the eight queries
+  03_queries.sql     the eleven queries
 database/
   wine_collection.db ready-to-open SQLite database, built from the scripts above
 tests/
-  test_database.py   35 tests over the schema, constraints, triggers and queries
+  test_database.py   42 tests over the schema, constraints, triggers, views and queries
 ```
 
 ## Running it
