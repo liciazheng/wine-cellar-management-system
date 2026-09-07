@@ -727,6 +727,59 @@ def test_updating_a_consumption_within_stock_is_allowed(db):
     assert remaining == 0
 
 
+def test_bottles_purchased_cannot_be_cut_below_what_was_drunk(db):
+    """
+    The hole the Consumption triggers left open. They all watch the child
+    table, so editing the parent reached the same forbidden state from the
+    other side: wine 1 has five bottles drunk, and setting its purchase down
+    to one produced a remaining stock of -4.
+    """
+    drunk = db.execute(
+        "SELECT bottles_drunk FROM WineStock WHERE wine_id = 1").fetchone()[0]
+    assert drunk > 1
+
+    with pytest.raises(sqlite3.IntegrityError, match="below what has already been drunk"):
+        db.execute("UPDATE Wine SET bottles_purchased = 1 WHERE wine_id = 1")
+
+
+def test_bottles_purchased_can_still_be_corrected_downward_within_reason(db):
+    """The guard must stop over-cutting, not stop corrections altogether."""
+    drunk = db.execute(
+        "SELECT bottles_drunk FROM WineStock WHERE wine_id = 1").fetchone()[0]
+    db.execute("UPDATE Wine SET bottles_purchased = ? WHERE wine_id = 1", (drunk,))
+    assert db.execute(
+        "SELECT bottles_remaining FROM WineStock WHERE wine_id = 1").fetchone()[0] == 0
+
+
+def test_purchase_date_cannot_move_past_an_existing_opening(db):
+    with pytest.raises(sqlite3.IntegrityError, match="already drunk"):
+        db.execute("UPDATE Wine SET purchase_date = '2030-01-01' WHERE wine_id = 1")
+
+
+def test_purchase_date_cannot_move_past_an_existing_tasting(db):
+    """
+    Wine 15 has a tasting but no consumption, so this exercises the tasting
+    branch of the trigger rather than the consumption one.
+    """
+    db.execute("""INSERT INTO Tasting
+                  VALUES (90, 15, 1, '2024-01-01', 4, 'note', 'food')""")
+    with pytest.raises(sqlite3.IntegrityError, match="already tasted"):
+        db.execute("UPDATE Wine SET purchase_date = '2030-01-01' WHERE wine_id = 15")
+
+
+def test_no_wine_ends_up_with_negative_stock(db):
+    """The invariant itself, stated once over the whole table."""
+    negative = db.execute(
+        "SELECT wine_name FROM WineStock WHERE bottles_remaining < 0").fetchall()
+    assert negative == []
+
+
+def test_an_appellation_must_state_its_classification(db):
+    with pytest.raises(sqlite3.IntegrityError):
+        db.execute("""INSERT INTO Appellation
+                      VALUES (99, 'Nowhere', NULL, 'Tuscany', 'Italy')""")
+
+
 def test_zero_bottles_is_not_a_consumption(db):
     with pytest.raises(sqlite3.IntegrityError):
         db.execute("""INSERT INTO Consumption

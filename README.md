@@ -55,7 +55,7 @@ erDiagram
     Appellation {
         INTEGER appellation_id   PK
         TEXT    appellation_name
-        TEXT    classification      "CHECK DOCG, DOC or IGT"
+        TEXT    classification      "NOT NULL, CHECK DOCG/DOC/IGT"
         TEXT    region
         TEXT    country
     }
@@ -88,7 +88,7 @@ erDiagram
         INTEGER tasting_id   PK
         INTEGER FK_wine_id   FK
         INTEGER FK_taster_id FK "who poured it"
-        TEXT    tasting_date
+        TEXT    tasting_date        "CHECK is a real ISO date"
         INTEGER rating          "CHECK between 1 and 5"
         TEXT    tasting_notes
         TEXT    food_pairing
@@ -98,7 +98,7 @@ erDiagram
         INTEGER consumption_id PK
         INTEGER FK_wine_id     FK
         INTEGER FK_tasting_id  FK "nullable and UNIQUE"
-        TEXT    consumed_date
+        TEXT    consumed_date        "NOT NULL, real ISO date"
         INTEGER bottles           "CHECK bottles > 0"
         TEXT    occasion
     }
@@ -147,7 +147,7 @@ BEGIN
 END;
 ```
 
-There are three such rules, each needing an `INSERT` and an `UPDATE` version — eight triggers in total, since a value that was legal on the way in can be edited into an illegal one afterwards:
+There are three such rules. Each needs an `INSERT` and an `UPDATE` version, since SQLite has no `BEFORE INSERT OR UPDATE` and a value that was legal on the way in can be edited into an illegal one afterwards — nine triggers in total:
 
 | Rule | Why a `CHECK` cannot state it |
 |---|---|
@@ -158,6 +158,8 @@ There are three such rules, each needing an `INSERT` and an `UPDATE` version —
 The second one is the subtle one. `Consumption.FK_wine_id` and `Consumption.FK_tasting_id` can each point at a row that genuinely exists while still disagreeing with each other — an opening of the Barbaresco carrying the note written about the Chianti. Referential integrity is fully satisfied and the link is still nonsense, so nothing but a trigger catches it.
 
 The `UPDATE` triggers are not copies of the `INSERT` ones. The stock check has to exclude the row being edited from its running total, or raising a single row by one bottle would count itself twice and be refused.
+
+**The ninth trigger is there because the first eight all watched the wrong end.** Every one of them guards `Consumption` or `Tasting`, which left the parent row open: `UPDATE Wine SET bottles_purchased = 1` on a wine with five bottles already drunk was accepted and produced a remaining stock of **−4** — precisely the state the stock rule exists to prevent, reached from the other side. Editing `purchase_date` forward did the same to the date rule, retroactively making five openings predate the purchase. `trg_wine_update_stays_consistent` closes both, and a test now asserts no wine can end up with negative stock. It is a good illustration of why an invariant has to be guarded from every table that can break it, not just the one it most obviously belongs to.
 
 Foreign keys, the drinking window and `Consumption.FK_wine_id` are indexed.
 
@@ -279,13 +281,13 @@ Tuscany dominates by bottles bought — 35 of 62 across its three classification
 
 ```
 sql/
-  01_schema.sql      tables, keys, constraints, 8 triggers, indexes, 2 views
+  01_schema.sql      tables, keys, constraints, 9 triggers, indexes, 2 views
   02_seed_data.sql   sample data
   03_queries.sql     the twelve queries
 database/
   wine_collection.db ready-to-open SQLite database, built from the scripts above
 tests/
-  test_database.py   77 tests over the schema, constraints, triggers, views and queries
+  test_database.py   83 tests over the schema, constraints, triggers, views and queries
 ```
 
 ## Running it
@@ -307,7 +309,7 @@ pip install pytest
 pytest
 ```
 
-77 tests, and they check more than "does it run":
+83 tests, and they check more than "does it run":
 
 - The SQL scripts build the schema they claim, and the **committed `.db` has not drifted** from them — same columns, same types, same row counts, and the same views, triggers and indexes. A ready-to-open binary is the one file nobody re-reads, so it is the one most likely to fall behind.
 - **Every constraint actually rejects bad data**, rather than merely documenting an intention. A rating of 0 or 6, a half-open drinking window, a window opening before the vintage, a negative price, humidity of 250%, a cellar with no capacity, two collectors sharing an email, a date of `'not-a-date'` or the unpadded `'2025-1-1'` — each is asserted to raise `IntegrityError`.
