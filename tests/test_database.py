@@ -21,6 +21,7 @@ SHIPPED_DB = ROOT / "database" / "wine_collection.db"
 EXPECTED_ROWS = {
     "Collector": 4,
     "Producer": 6,
+    "Appellation": 9,
     "Location": 4,
     "Wine": 15,
     "Tasting": 18,
@@ -113,23 +114,62 @@ def test_rating_below_one_is_rejected(db):
         db.execute("INSERT INTO Tasting VALUES (99, 1, 1, '2024-01-01', 0, 'x', 'y')")
 
 
+def insert_wine(db, **overrides):
+    """
+    Insert a wine by column name, not by position.
+
+    These tests used positional VALUES until FK_appellation_id was added in the
+    middle of Wine, at which point a NULL aimed at wine_name silently landed on
+    a nullable column instead and the test stopped testing anything.
+    """
+    row = {
+        "wine_id": 99, "FK_collector_id": 1, "FK_producer_id": 1,
+        "FK_location_id": 1, "FK_appellation_id": 1, "wine_name": "Test Wine",
+        "grape_varietal": "Sangiovese", "vintage_year": 2020,
+        "purchase_date": "2021-01-01", "purchase_price": 50.0,
+        "bottles_purchased": 1, "drink_from": 2025, "drink_until": 2030,
+    }
+    row.update(overrides)
+    columns = ", ".join(row)
+    placeholders = ", ".join("?" * len(row))
+    return db.execute(
+        f"INSERT INTO Wine ({columns}) VALUES ({placeholders})", list(row.values()))
+
+
 def test_backwards_drinking_window_is_rejected(db):
     """drink_until before drink_from is incoherent and must not be storable."""
     with pytest.raises(sqlite3.IntegrityError):
-        db.execute("""INSERT INTO Wine VALUES (99, 1, 1, 1, 'Bad Wine', 'Sangiovese',
-                      'Toscana IGT', 2020, '2021-01-01', 50.0, 1, 2030, 2025)""")
+        insert_wine(db, drink_from=2030, drink_until=2025)
 
 
 def test_wine_requires_a_name(db):
     with pytest.raises(sqlite3.IntegrityError):
-        db.execute("""INSERT INTO Wine VALUES (99, 1, 1, 1, NULL, 'Sangiovese',
-                      'Toscana IGT', 2020, '2021-01-01', 50.0, 1, 2025, 2030)""")
+        insert_wine(db, wine_name=None)
+
+
+def test_wine_requires_a_bottle_count(db):
+    with pytest.raises(sqlite3.IntegrityError):
+        insert_wine(db, bottles_purchased=None)
+
+
+def test_buying_zero_bottles_is_not_a_purchase(db):
+    with pytest.raises(sqlite3.IntegrityError):
+        insert_wine(db, bottles_purchased=0)
 
 
 def test_wine_cannot_reference_a_missing_collector(db):
     with pytest.raises(sqlite3.IntegrityError):
-        db.execute("""INSERT INTO Wine VALUES (99, 999, 1, 1, 'Orphan', 'Sangiovese',
-                      'Toscana IGT', 2020, '2021-01-01', 50.0, 1, 2025, 2030)""")
+        insert_wine(db, FK_collector_id=999)
+
+
+def test_the_baseline_wine_is_actually_insertable(db):
+    """
+    Guard on the helper itself: if the defaults were invalid, every test above
+    would pass for the wrong reason.
+    """
+    insert_wine(db)
+    assert db.execute(
+        "SELECT wine_name FROM Wine WHERE wine_id = 99").fetchone()[0] == "Test Wine"
 
 
 def test_tasting_cannot_reference_a_missing_taster(db):
@@ -142,7 +182,7 @@ def test_tasting_cannot_reference_a_missing_taster(db):
 def test_every_query_executes(db):
     sql = (SQL / "03_queries.sql").read_text(encoding="utf-8")
     queries = [s for s in split_statements(sql) if "SELECT" in s.upper()]
-    assert len(queries) == 11
+    assert len(queries) == 12
     for i, query in enumerate(queries, 1):
         rows = db.execute(query).fetchall()
         assert rows, f"Q{i} returned no rows"
@@ -279,6 +319,91 @@ def test_a_wine_can_have_several_tastings_over_time(db):
 
 
 # --- data sanity ----------------------------------------------------------
+
+# --- appellations -----------------------------------------------------------
+
+def test_an_appellation_has_exactly_one_region(db):
+    """
+    The transitive dependency the Appellation table exists to remove. When the
+    appellation was free text on Wine, nothing stopped two bottles of Chianti
+    Classico claiming different regions.
+    """
+    split = db.execute("""
+        SELECT appellation_name, COUNT(DISTINCT region)
+        FROM Appellation GROUP BY appellation_name
+        HAVING COUNT(DISTINCT region) > 1
+    """).fetchall()
+    assert split == []
+
+
+def test_every_wine_region_comes_from_its_appellation(db):
+    """
+    Not from its producer. Producer.home_region is where the winery is, which
+    is a different fact and is allowed to differ.
+    """
+    columns = {r[1] for r in db.execute("PRAGMA table_info(Producer)")}
+    assert "region" not in columns, "Producer.region invited being read as the wine's region"
+    assert "home_region" in columns
+
+    unsourced = db.execute("""
+        SELECT wine_name FROM WineStock
+        WHERE FK_appellation_id IS NOT NULL AND region IS NULL
+    """).fetchall()
+    assert unsourced == []
+
+
+def test_classification_is_a_known_designation(db):
+    with pytest.raises(sqlite3.IntegrityError):
+        db.execute("""INSERT INTO Appellation
+                      VALUES (99, 'Somewhere', 'GRAND CRU', 'Tuscany', 'Italy')""")
+
+
+def test_appellations_are_not_duplicated(db):
+    with pytest.raises(sqlite3.IntegrityError):
+        db.execute("""INSERT INTO Appellation
+                      VALUES (99, 'Chianti Classico', 'DOCG', 'Tuscany', 'Italy')""")
+
+
+def test_wine_cannot_reference_a_missing_appellation(db):
+    with pytest.raises(sqlite3.IntegrityError):
+        insert_wine(db, FK_appellation_id=999)
+
+
+def test_no_wine_is_masquerading_as_a_producer(db):
+    """
+    Sassicaia sat in the Producer table until this was fixed. It is a wine; the
+    estate is Tenuta San Guido. A producer name that matches a wine name is the
+    signal that the two got conflated again.
+    """
+    producers = {r[0] for r in db.execute("SELECT producer_name FROM Producer")}
+    wines = {r[0] for r in db.execute("SELECT wine_name FROM Wine")}
+    assert producers & wines == set()
+    assert "Sassicaia" not in producers
+
+
+def test_classification_is_not_glued_onto_the_appellation_name(db):
+    """The designation is its own column, so it must not also be in the name."""
+    names = [r[0] for r in db.execute("SELECT appellation_name FROM Appellation")]
+    for name in names:
+        assert not any(name.endswith(f" {c}") for c in ("DOCG", "DOC", "IGT")), name
+
+
+def test_ageing_designations_stay_out_of_the_appellation(db):
+    """
+    A Chianti Classico Riserva is a Chianti Classico DOCG aged longer. Treating
+    Riserva as its own appellation would split one region's holdings in two.
+    """
+    names = [r[0] for r in db.execute("SELECT appellation_name FROM Appellation")]
+    for name in names:
+        assert "Riserva" not in name, name
+
+    riserva = db.execute("""
+        SELECT appellation_name FROM WineStock WHERE wine_name LIKE '%Riserva%'
+    """).fetchall()
+    assert riserva, "no Riserva in the sample data, so nothing was checked"
+    for (appellation,) in riserva:
+        assert "Riserva" not in appellation
+
 
 def test_grape_varietal_is_not_holding_appellations(db):
     """
