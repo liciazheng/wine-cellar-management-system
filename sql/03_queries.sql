@@ -12,9 +12,11 @@ SELECT
     WineStock.wine_name,
     WineStock.vintage_year,
     WineStock.grape_varietal,
-    WineStock.appellation,
+    WineStock.appellation_name,
+    WineStock.classification,
+    WineStock.region,
     Producer.producer_name,
-    Producer.region,
+    Producer.home_region,
     Collector.name AS collector_name,
     WineStock.bottles_purchased,
     WineStock.bottles_drunk,
@@ -83,7 +85,7 @@ SELECT
     SUM(WineStock.bottles_remaining)      AS bottles_on_hand,
     ROUND(SUM(WineStock.purchase_price * WineStock.bottles_purchased), 2) AS total_spend,
     ROUND(AVG(WineStock.purchase_price), 2)                              AS avg_bottle_price,
-    COUNT(DISTINCT WineStock.appellation)                                AS appellations
+    COUNT(DISTINCT WineStock.FK_appellation_id)                          AS appellations
 FROM WineStock
 GROUP BY WineStock.grape_varietal
 ORDER BY bottles_bought DESC;
@@ -220,7 +222,8 @@ SELECT
     WineStock.wine_name,
     WineStock.vintage_year,
     Producer.producer_name,
-    WineStock.appellation,
+    WineStock.appellation_name,
+    WineStock.classification,
     WineStock.bottles_purchased,
     WineStock.purchase_price,
     ROUND(AVG(Tasting.rating), 2)   AS avg_rating,
@@ -233,3 +236,21 @@ LEFT JOIN Tasting ON Tasting.FK_wine_id      = WineStock.wine_id
 WHERE WineStock.is_finished = 1
 GROUP BY WineStock.wine_id
 ORDER BY avg_rating DESC;
+
+
+-- Q12. Holdings by region and classification.
+--      The query the old schema could not answer. Region used to be read off
+--      the producer, which put Antinori's Bolgheri wines in Chianti; it now
+--      comes from the appellation, where it actually belongs.
+SELECT
+    Appellation.region,
+    Appellation.classification,
+    COUNT(DISTINCT WineStock.wine_id)      AS labels,
+    COUNT(DISTINCT WineStock.FK_producer_id) AS producers,
+    SUM(WineStock.bottles_purchased)       AS bottles_bought,
+    SUM(WineStock.bottles_remaining)       AS bottles_on_hand,
+    ROUND(SUM(WineStock.purchase_price * WineStock.bottles_remaining), 2) AS value_on_hand
+FROM WineStock
+JOIN Appellation ON Appellation.appellation_id = WineStock.FK_appellation_id
+GROUP BY Appellation.region, Appellation.classification
+ORDER BY value_on_hand DESC;

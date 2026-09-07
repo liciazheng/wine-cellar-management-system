@@ -5,43 +5,57 @@
 -- collectors, bottles, prices, dates, ratings and tasting notes are all
 -- fabricated to exercise the schema.
 --
--- 4 collectors, 6 producers, 4 storage locations, 15 wines, 18 tastings,
--- 27 bottles consumed.
+-- 4 collectors, 6 producers, 9 appellations, 4 storage locations, 15 wines,
+-- 18 tastings, 27 bottles consumed.
 
 INSERT INTO Collector VALUES (1, 'John Smith', 'john.smith@example.com');
 INSERT INTO Collector VALUES (2, 'Emily Johnson', 'emily.johnson@example.com');
 INSERT INTO Collector VALUES (3, 'Michael Brown', 'michael.brown@example.com');
 INSERT INTO Collector VALUES (4, 'Sarah Davis', 'sarah.davis@example.com');
 
+-- producer_id, producer_name, home_region, country
+-- Producer 3 was 'Sassicaia' in an earlier version, which is a wine and not a
+-- winery. The estate that makes it is Tenuta San Guido.
 INSERT INTO Producer VALUES (1, 'Antinori', 'Tuscany', 'Italy');
 INSERT INTO Producer VALUES (2, 'Gaja', 'Piedmont', 'Italy');
-INSERT INTO Producer VALUES (3, 'Sassicaia', 'Tuscany', 'Italy');
+INSERT INTO Producer VALUES (3, 'Tenuta San Guido', 'Tuscany', 'Italy');
 INSERT INTO Producer VALUES (4, 'Fontodi', 'Tuscany', 'Italy');
 INSERT INTO Producer VALUES (5, 'Marchesi di Barolo', 'Piedmont', 'Italy');
 INSERT INTO Producer VALUES (6, 'Allegrini', 'Veneto', 'Italy');
+
+-- appellation_id, appellation_name, classification, region, country
+INSERT INTO Appellation VALUES (1, 'Chianti Classico',           'DOCG', 'Tuscany',  'Italy');
+INSERT INTO Appellation VALUES (2, 'Barolo',                     'DOCG', 'Piedmont', 'Italy');
+INSERT INTO Appellation VALUES (3, 'Barbaresco',                 'DOCG', 'Piedmont', 'Italy');
+INSERT INTO Appellation VALUES (4, 'Brunello di Montalcino',     'DOCG', 'Tuscany',  'Italy');
+INSERT INTO Appellation VALUES (5, 'Amarone della Valpolicella', 'DOCG', 'Veneto',   'Italy');
+INSERT INTO Appellation VALUES (6, 'Valpolicella Superiore',     'DOC',  'Veneto',   'Italy');
+INSERT INTO Appellation VALUES (7, 'Bolgheri',                   'DOC',  'Tuscany',  'Italy');
+INSERT INTO Appellation VALUES (8, 'Nebbiolo d''Alba',           'DOC',  'Piedmont', 'Italy');
+INSERT INTO Appellation VALUES (9, 'Toscana',                    'IGT',  'Tuscany',  'Italy');
 
 INSERT INTO Location VALUES (1, 'Main Cellar', 14.0, 70.0, 500);
 INSERT INTO Location VALUES (2, 'Basement Storage', 13.5, 65.0, 200);
 INSERT INTO Location VALUES (3, 'Wine Refrigerator', 12.0, 60.0, 50);
 INSERT INTO Location VALUES (4, 'Guest House Cellar', 15.0, 68.0, 100);
 
--- wine_id, collector, producer, location, wine_name, grape, appellation,
+-- wine_id, collector, producer, location, appellation, wine_name, grape,
 -- vintage, purchase_date, price, bottles_purchased, drink_from, drink_until
-INSERT INTO Wine VALUES (1,  1, 1, 1, 'Chianti Classico',           'Sangiovese',         'Chianti Classico DOCG',           2018, '2020-03-15',  45.50, 6, 2023, 2028);
-INSERT INTO Wine VALUES (2,  1, 2, 1, 'Barolo',                     'Nebbiolo',           'Barolo DOCG',                     2016, '2021-05-20', 120.00, 3, 2026, 2036);
-INSERT INTO Wine VALUES (3,  1, 3, 2, 'Bolgheri Superiore',         'Cabernet Sauvignon', 'Bolgheri DOC',                    2019, '2022-01-10', 180.00, 2, 2029, 2039);
-INSERT INTO Wine VALUES (4,  2, 1, 1, 'Brunello di Montalcino',     'Sangiovese',         'Brunello di Montalcino DOCG',     2020, '2023-06-15',  95.00, 4, 2028, 2038);
-INSERT INTO Wine VALUES (5,  2, 4, 2, 'Chianti Classico',           'Sangiovese',         'Chianti Classico DOCG',           2017, '2020-11-20',  65.00, 5, 2022, 2027);
-INSERT INTO Wine VALUES (6,  2, 5, 1, 'Barolo Riserva',             'Nebbiolo',           'Barolo DOCG',                     2015, '2021-08-05', 150.00, 2, 2025, 2040);
-INSERT INTO Wine VALUES (7,  3, 6, 3, 'Amarone della Valpolicella', 'Corvina',            'Amarone della Valpolicella DOCG', 2021, '2023-12-01',  85.00, 6, 2026, 2036);
-INSERT INTO Wine VALUES (8,  3, 1, 3, 'Tignanello',                 'Sangiovese',         'Toscana IGT',                     2019, '2022-03-18', 110.00, 3, 2024, 2034);
-INSERT INTO Wine VALUES (9,  3, 2, 2, 'Barbaresco',                 'Nebbiolo',           'Barbaresco DOCG',                 2018, '2023-02-14',  98.00, 4, 2023, 2033);
-INSERT INTO Wine VALUES (10, 4, 3, 4, 'Bolgheri Rosso',             'Cabernet Sauvignon', 'Bolgheri DOC',                    2020, '2023-09-10',  75.00, 5, 2025, 2030);
-INSERT INTO Wine VALUES (11, 4, 4, 4, 'Chianti Classico Riserva',   'Sangiovese',         'Chianti Classico DOCG',           2019, '2022-07-22',  55.00, 8, 2024, 2029);
-INSERT INTO Wine VALUES (12, 1, 5, 1, 'Nebbiolo d''Alba',           'Nebbiolo',           'Nebbiolo d''Alba DOC',            2017, '2021-10-30',  88.00, 3, 2022, 2032);
-INSERT INTO Wine VALUES (13, 2, 6, 2, 'Valpolicella Superiore',     'Corvina',            'Valpolicella Superiore DOC',      2020, '2023-05-15',  42.00, 6, 2023, 2028);
-INSERT INTO Wine VALUES (14, 3, 1, 3, 'Solaia',                     'Cabernet Sauvignon', 'Toscana IGT',                     2016, '2020-12-20', 250.00, 2, 2026, 2041);
-INSERT INTO Wine VALUES (15, 4, 2, 4, 'Barbaresco',                 'Nebbiolo',           'Barbaresco DOCG',                 2019, '2023-01-08', 195.00, 3, 2024, 2034);
+INSERT INTO Wine VALUES (1,  1, 1, 1, 1, 'Chianti Classico',           'Sangiovese',         2018, '2020-03-15',  45.50, 6, 2023, 2028);
+INSERT INTO Wine VALUES (2,  1, 2, 1, 2, 'Barolo',                     'Nebbiolo',           2016, '2021-05-20', 120.00, 3, 2026, 2036);
+INSERT INTO Wine VALUES (3,  1, 3, 2, 7, 'Bolgheri Superiore',         'Cabernet Sauvignon', 2019, '2022-01-10', 180.00, 2, 2029, 2039);
+INSERT INTO Wine VALUES (4,  2, 1, 1, 4, 'Brunello di Montalcino',     'Sangiovese',         2020, '2023-06-15',  95.00, 4, 2028, 2038);
+INSERT INTO Wine VALUES (5,  2, 4, 2, 1, 'Chianti Classico',           'Sangiovese',         2017, '2020-11-20',  65.00, 5, 2022, 2027);
+INSERT INTO Wine VALUES (6,  2, 5, 1, 2, 'Barolo Riserva',             'Nebbiolo',           2015, '2021-08-05', 150.00, 2, 2025, 2040);
+INSERT INTO Wine VALUES (7,  3, 6, 3, 5, 'Amarone della Valpolicella', 'Corvina',            2021, '2023-12-01',  85.00, 6, 2026, 2036);
+INSERT INTO Wine VALUES (8,  3, 1, 3, 9, 'Tignanello',                 'Sangiovese',         2019, '2022-03-18', 110.00, 3, 2024, 2034);
+INSERT INTO Wine VALUES (9,  3, 2, 2, 3, 'Barbaresco',                 'Nebbiolo',           2018, '2023-02-14',  98.00, 4, 2023, 2033);
+INSERT INTO Wine VALUES (10, 4, 3, 4, 7, 'Bolgheri Rosso',             'Cabernet Sauvignon', 2020, '2023-09-10',  75.00, 5, 2025, 2030);
+INSERT INTO Wine VALUES (11, 4, 4, 4, 1, 'Chianti Classico Riserva',   'Sangiovese',         2019, '2022-07-22',  55.00, 8, 2024, 2029);
+INSERT INTO Wine VALUES (12, 1, 5, 1, 8, 'Nebbiolo d''Alba',           'Nebbiolo',           2017, '2021-10-30',  88.00, 3, 2022, 2032);
+INSERT INTO Wine VALUES (13, 2, 6, 2, 6, 'Valpolicella Superiore',     'Corvina',            2020, '2023-05-15',  42.00, 6, 2023, 2028);
+INSERT INTO Wine VALUES (14, 3, 1, 3, 9, 'Solaia',                     'Cabernet Sauvignon', 2016, '2020-12-20', 250.00, 2, 2026, 2041);
+INSERT INTO Wine VALUES (15, 4, 2, 4, 3, 'Barbaresco',                 'Nebbiolo',           2019, '2023-01-08', 195.00, 3, 2024, 2034);
 
 -- tasting_id, wine, taster, date, rating, notes, pairing
 -- Tasters are a mix of owners and guests, so the cross-collector case is

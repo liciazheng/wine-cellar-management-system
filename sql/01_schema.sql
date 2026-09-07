@@ -1,6 +1,7 @@
 -- Wine Cellar Management System — schema
 -- SQLite / DB Browser for SQLite
--- Six entities: Collector, Producer, Location, Wine, Tasting, Consumption
+-- Seven entities: Collector, Producer, Appellation, Location, Wine, Tasting,
+-- Consumption
 
 CREATE TABLE Collector (
     collector_id INTEGER PRIMARY KEY,
@@ -11,8 +12,27 @@ CREATE TABLE Collector (
 CREATE TABLE Producer (
     producer_id   INTEGER PRIMARY KEY,
     producer_name TEXT NOT NULL,
-    region        TEXT,
+
+    -- Where the winery is based, which is not the same as where any given
+    -- bottle comes from. Antinori is a Tuscan house that bottles Chianti
+    -- Classico in Chianti and Solaia in Bolgheri, so a wine's region has to
+    -- come from its appellation and not from here.
+    home_region   TEXT,
     country       TEXT
+);
+
+-- Appellations, split out of Wine. The old design stored the appellation as
+-- free text on every wine, which repeated 'Chianti Classico DOCG' three times
+-- and — worse — buried a transitive dependency: an appellation determines its
+-- region and its classification, so those facts belonged with the appellation
+-- rather than with each bottle. This is the third-normal-form fix.
+CREATE TABLE Appellation (
+    appellation_id   INTEGER PRIMARY KEY,
+    appellation_name TEXT NOT NULL,
+    classification   TEXT CHECK (classification IN ('DOCG', 'DOC', 'IGT')),
+    region           TEXT NOT NULL,
+    country          TEXT NOT NULL,
+    UNIQUE (appellation_name, classification)
 );
 
 CREATE TABLE Location (
@@ -24,10 +44,11 @@ CREATE TABLE Location (
 );
 
 CREATE TABLE Wine (
-    wine_id         INTEGER PRIMARY KEY,
-    FK_collector_id INTEGER NOT NULL,
-    FK_producer_id  INTEGER NOT NULL,
-    FK_location_id  INTEGER NOT NULL,
+    wine_id           INTEGER PRIMARY KEY,
+    FK_collector_id   INTEGER NOT NULL,
+    FK_producer_id    INTEGER NOT NULL,
+    FK_location_id    INTEGER NOT NULL,
+    FK_appellation_id INTEGER,
 
     -- Three separate concepts, deliberately kept apart. The label on the
     -- bottle ("Tignanello"), the grape it is made from ("Sangiovese"), and
@@ -36,9 +57,13 @@ CREATE TABLE Wine (
     -- Solaia is a proprietary name for a Cabernet bottled as Toscana IGT.
     -- Collapsing them into one column makes it impossible to ask "how much
     -- Sangiovese do I own?" or "what is in my cellar from Piedmont?"
+    --
+    -- Ageing designations stay in wine_name, not in the appellation. A
+    -- "Chianti Classico Riserva" is a Chianti Classico DOCG that was aged
+    -- longer; treating Riserva as its own appellation would have split one
+    -- region's holdings across two rows that mean the same place.
     wine_name       TEXT NOT NULL,
     grape_varietal  TEXT,
-    appellation     TEXT,
 
     vintage_year    INTEGER,
     purchase_date   TEXT,
@@ -56,9 +81,10 @@ CREATE TABLE Wine (
     drink_from      INTEGER,
     drink_until     INTEGER,
 
-    FOREIGN KEY (FK_collector_id) REFERENCES Collector(collector_id),
-    FOREIGN KEY (FK_producer_id)  REFERENCES Producer(producer_id),
-    FOREIGN KEY (FK_location_id)  REFERENCES Location(location_id),
+    FOREIGN KEY (FK_collector_id)   REFERENCES Collector(collector_id),
+    FOREIGN KEY (FK_producer_id)    REFERENCES Producer(producer_id),
+    FOREIGN KEY (FK_location_id)    REFERENCES Location(location_id),
+    FOREIGN KEY (FK_appellation_id) REFERENCES Appellation(appellation_id),
     CHECK (drink_until >= drink_from)
 );
 
@@ -138,6 +164,7 @@ END;
 CREATE INDEX idx_wine_collector    ON Wine(FK_collector_id);
 CREATE INDEX idx_wine_producer     ON Wine(FK_producer_id);
 CREATE INDEX idx_wine_location     ON Wine(FK_location_id);
+CREATE INDEX idx_wine_appellation  ON Wine(FK_appellation_id);
 CREATE INDEX idx_wine_drink_window ON Wine(drink_from, drink_until);
 CREATE INDEX idx_tasting_wine      ON Tasting(FK_wine_id);
 CREATE INDEX idx_tasting_taster    ON Tasting(FK_taster_id);
@@ -159,11 +186,16 @@ SELECT
     Wine.wine_id,
     Wine.wine_name,
     Wine.grape_varietal,
-    Wine.appellation,
     Wine.vintage_year,
     Wine.FK_collector_id,
     Wine.FK_producer_id,
     Wine.FK_location_id,
+    Wine.FK_appellation_id,
+    -- Denormalised into the view, not into the table: readable appellation and
+    -- region without every query having to repeat the join.
+    Appellation.appellation_name,
+    Appellation.classification,
+    Appellation.region,
     Wine.purchase_date,
     Wine.purchase_price,
     Wine.drink_from,
@@ -174,6 +206,7 @@ SELECT
     CASE WHEN Wine.bottles_purchased = COALESCE(drunk.bottles, 0)
          THEN 1 ELSE 0 END                            AS is_finished
 FROM Wine
+LEFT JOIN Appellation ON Appellation.appellation_id = Wine.FK_appellation_id
 LEFT JOIN (
     SELECT FK_wine_id, SUM(bottles) AS bottles
     FROM Consumption
