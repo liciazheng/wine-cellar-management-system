@@ -40,7 +40,11 @@ CREATE TABLE Appellation (
     classification   TEXT CHECK (classification IN ('DOCG', 'DOC', 'IGT')),
     region           TEXT NOT NULL,
     country          TEXT NOT NULL,
-    UNIQUE (appellation_name, classification)
+    -- The name alone, not the name-and-classification pair. A denomination
+    -- carries exactly one classification, so keying on both would have let
+    -- 'Chianti Classico' exist as DOCG and DOC at once and split its holdings
+    -- across two rows meaning the same place.
+    UNIQUE (appellation_name)
 );
 
 CREATE TABLE Location (

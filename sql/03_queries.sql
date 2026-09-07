@@ -164,39 +164,66 @@ ORDER BY total_spend DESC;
 --     Rate is bottles drunk per year since purchase. Projecting stock forward
 --     at that rate says which bottles will be gone before their window shuts
 --     and which will still be sitting there after it does.
+--
+--     Two guards, both of which the first version of this query got wrong.
+--     A rate annualised from a few weeks of ownership is not a rate: one
+--     bottle opened a fortnight after purchase extrapolates to 26 a year,
+--     which is not a NULL or an error but a plausible-looking wrong number,
+--     so anything held under a year reports no rate at all. And purchase_date
+--     is nullable, which made every derived column NULL without saying why.
+--
+--     The pace CTE also exists so the julianday expression is written once
+--     rather than three times.
+WITH pace AS (
+    SELECT
+        WineStock.*,
+        (julianday('now') - julianday(WineStock.purchase_date)) / 365.25 AS years_owned
+    FROM WineStock
+),
+rate AS (
+    SELECT
+        pace.*,
+        CASE WHEN years_owned >= 1.0
+             THEN bottles_drunk / years_owned
+        END AS per_year
+    FROM pace
+),
+projection AS (
+    SELECT
+        rate.*,
+        CASE WHEN per_year > 0
+             THEN CAST(strftime('%Y', 'now') AS INTEGER)
+                  + CAST(ROUND(bottles_remaining / per_year) AS INTEGER)
+        END AS runs_out_year
+    FROM rate
+)
 SELECT
-    WineStock.wine_name,
-    WineStock.vintage_year,
+    projection.wine_name,
+    projection.vintage_year,
     Producer.producer_name,
-    WineStock.bottles_purchased,
-    WineStock.bottles_remaining,
-    ROUND((julianday('now') - julianday(WineStock.purchase_date)) / 365.25, 1) AS years_owned,
-    ROUND(WineStock.bottles_drunk * 365.25
-          / (julianday('now') - julianday(WineStock.purchase_date)), 2)        AS bottles_per_year,
+    projection.bottles_purchased,
+    projection.bottles_remaining,
+    ROUND(projection.years_owned, 1) AS years_owned,
+    ROUND(projection.per_year, 2)    AS bottles_per_year,
     CASE
-        WHEN WineStock.bottles_remaining = 0 THEN 'finished'
-        WHEN WineStock.bottles_drunk = 0     THEN 'untouched'
-        -- CAST to INTEGER before TEXT, or ROUND leaves a '.0' on the year.
-        ELSE CAST(CAST(CAST(strftime('%Y', 'now') AS INTEGER)
-                  + ROUND(WineStock.bottles_remaining
-                          * (julianday('now') - julianday(WineStock.purchase_date))
-                          / 365.25 / WineStock.bottles_drunk) AS INTEGER) AS TEXT)
+        WHEN projection.purchase_date IS NULL  THEN 'no purchase date'
+        WHEN projection.years_owned < 1.0      THEN 'owned under a year'
+        WHEN projection.bottles_remaining = 0  THEN 'finished'
+        WHEN projection.bottles_drunk = 0      THEN 'untouched'
+        ELSE CAST(projection.runs_out_year AS TEXT)
     END AS runs_out_around,
-    WineStock.drink_until,
+    projection.drink_until,
     -- The point of the projection: bottles you will still be holding after
     -- they are past their best.
     CASE
-        WHEN WineStock.bottles_remaining = 0 OR WineStock.bottles_drunk = 0 THEN NULL
-        WHEN CAST(strftime('%Y', 'now') AS INTEGER)
-             + ROUND(WineStock.bottles_remaining
-                     * (julianday('now') - julianday(WineStock.purchase_date))
-                     / 365.25 / WineStock.bottles_drunk) > WineStock.drink_until
-        THEN 'drinking too slowly'
+        WHEN projection.runs_out_year IS NULL              THEN NULL
+        WHEN projection.bottles_remaining = 0              THEN NULL
+        WHEN projection.runs_out_year > projection.drink_until THEN 'drinking too slowly'
         ELSE 'on track'
     END AS verdict
-FROM WineStock
-JOIN Producer ON WineStock.FK_producer_id = Producer.producer_id
-ORDER BY bottles_per_year DESC, WineStock.wine_name;
+FROM projection
+JOIN Producer ON projection.FK_producer_id = Producer.producer_id
+ORDER BY projection.per_year DESC NULLS LAST, projection.wine_name;
 
 
 -- Q10. The drinking log, by year.
