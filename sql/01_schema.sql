@@ -1,6 +1,6 @@
 -- Wine Cellar Management System — schema
 -- SQLite / DB Browser for SQLite
--- Five entities: Collector, Producer, Location, Wine, Tasting
+-- Six entities: Collector, Producer, Location, Wine, Tasting, Consumption
 
 CREATE TABLE Collector (
     collector_id INTEGER PRIMARY KEY,
@@ -43,7 +43,13 @@ CREATE TABLE Wine (
     vintage_year    INTEGER,
     purchase_date   TEXT,
     purchase_price  REAL,
-    quantity        INTEGER,
+
+    -- How many bottles were bought, which never changes. What is left in the
+    -- cellar is this minus everything recorded in Consumption. An earlier
+    -- version called this `quantity` and left it static while bottles were
+    -- being tasted, so the number silently meant "purchased" while reading
+    -- like "in stock".
+    bottles_purchased INTEGER NOT NULL CHECK (bottles_purchased > 0),
 
     -- Stored as two integers rather than a '2023-2028' string, so the drinking
     -- window is queryable with a plain BETWEEN instead of string parsing.
@@ -74,11 +80,65 @@ CREATE TABLE Tasting (
     FOREIGN KEY (FK_taster_id) REFERENCES Collector(collector_id)
 );
 
+CREATE TABLE Consumption (
+    consumption_id INTEGER PRIMARY KEY,
+    FK_wine_id     INTEGER NOT NULL,
+
+    -- Optional. A bottle can be opened without anyone writing a note, and a
+    -- note can exist without a bottle leaving this cellar (tasting someone
+    -- else's). UNIQUE over a nullable column is exactly what is wanted here:
+    -- SQLite permits many NULLs, so any number of bottles can go unrecorded,
+    -- but a given note cannot be claimed by two openings.
+    FK_tasting_id  INTEGER UNIQUE,
+
+    consumed_date  TEXT NOT NULL,
+    bottles        INTEGER NOT NULL DEFAULT 1 CHECK (bottles > 0),
+    occasion       TEXT,
+
+    -- No collector column here on purpose. Whose cellar the bottle left is a
+    -- fact about the Wine, and who drank it is a fact about the Tasting;
+    -- repeating either one would denormalise this table into a copy of them.
+    FOREIGN KEY (FK_wine_id)    REFERENCES Wine(wine_id),
+    FOREIGN KEY (FK_tasting_id) REFERENCES Tasting(tasting_id)
+);
+
+-- You cannot drink more bottles than you bought. That spans rows and tables,
+-- so a CHECK cannot express it and it has to be a trigger. Without this the
+-- schema would happily record a cellar holding negative stock.
+CREATE TRIGGER trg_consumption_insert_within_stock
+BEFORE INSERT ON Consumption
+BEGIN
+    SELECT RAISE(ABORT, 'consumption would exceed bottles purchased')
+    WHERE NEW.bottles + (
+              SELECT COALESCE(SUM(bottles), 0) FROM Consumption
+              WHERE FK_wine_id = NEW.FK_wine_id
+          ) > (
+              SELECT bottles_purchased FROM Wine WHERE wine_id = NEW.FK_wine_id
+          );
+END;
+
+-- The same rule for edits. The row being changed is excluded from the running
+-- total, or correcting a single row upward would count itself twice.
+CREATE TRIGGER trg_consumption_update_within_stock
+BEFORE UPDATE ON Consumption
+BEGIN
+    SELECT RAISE(ABORT, 'consumption would exceed bottles purchased')
+    WHERE NEW.bottles + (
+              SELECT COALESCE(SUM(bottles), 0) FROM Consumption
+              WHERE FK_wine_id = NEW.FK_wine_id
+                AND consumption_id <> OLD.consumption_id
+          ) > (
+              SELECT bottles_purchased FROM Wine WHERE wine_id = NEW.FK_wine_id
+          );
+END;
+
 -- The foreign keys carry every join in 03_queries.sql. The drinking-window
--- index supports the "what should I drink this year" lookup.
+-- index supports the "what should I drink this year" lookup, and the
+-- Consumption index supports the remaining-stock subtraction.
 CREATE INDEX idx_wine_collector    ON Wine(FK_collector_id);
 CREATE INDEX idx_wine_producer     ON Wine(FK_producer_id);
 CREATE INDEX idx_wine_location     ON Wine(FK_location_id);
 CREATE INDEX idx_wine_drink_window ON Wine(drink_from, drink_until);
 CREATE INDEX idx_tasting_wine      ON Tasting(FK_wine_id);
 CREATE INDEX idx_tasting_taster    ON Tasting(FK_taster_id);
+CREATE INDEX idx_consumption_wine  ON Consumption(FK_wine_id);

@@ -5,7 +5,8 @@
 -- collectors, bottles, prices, dates, ratings and tasting notes are all
 -- fabricated to exercise the schema.
 --
--- 4 collectors, 6 producers, 4 storage locations, 15 wines, 18 tastings.
+-- 4 collectors, 6 producers, 4 storage locations, 15 wines, 18 tastings,
+-- 27 bottles consumed.
 
 INSERT INTO Collector VALUES (1, 'John Smith', 'john.smith@example.com');
 INSERT INTO Collector VALUES (2, 'Emily Johnson', 'emily.johnson@example.com');
@@ -25,7 +26,7 @@ INSERT INTO Location VALUES (3, 'Wine Refrigerator', 12.0, 60.0, 50);
 INSERT INTO Location VALUES (4, 'Guest House Cellar', 15.0, 68.0, 100);
 
 -- wine_id, collector, producer, location, wine_name, grape, appellation,
--- vintage, purchase_date, price, qty, drink_from, drink_until
+-- vintage, purchase_date, price, bottles_purchased, drink_from, drink_until
 INSERT INTO Wine VALUES (1,  1, 1, 1, 'Chianti Classico',           'Sangiovese',         'Chianti Classico DOCG',           2018, '2020-03-15',  45.50, 6, 2023, 2028);
 INSERT INTO Wine VALUES (2,  1, 2, 1, 'Barolo',                     'Nebbiolo',           'Barolo DOCG',                     2016, '2021-05-20', 120.00, 3, 2026, 2036);
 INSERT INTO Wine VALUES (3,  1, 3, 2, 'Bolgheri Superiore',         'Cabernet Sauvignon', 'Bolgheri DOC',                    2019, '2022-01-10', 180.00, 2, 2029, 2039);
@@ -63,3 +64,36 @@ INSERT INTO Tasting VALUES (15, 14, 3, '2023-12-31', 5, 'Exceptional Super Tusca
 INSERT INTO Tasting VALUES (16, 1,  1, '2024-10-15', 4, 'Third tasting - wine is evolving beautifully. More tertiary notes.', 'Pork roast');
 INSERT INTO Tasting VALUES (17, 7,  4, '2024-09-08', 5, 'Second tasting confirms this is an excellent vintage Amarone.', 'Blue cheese');
 INSERT INTO Tasting VALUES (18, 11, 2, '2024-11-20', 5, 'Improved significantly. Now showing great complexity and depth.', 'Osso buco');
+
+-- Bottles leaving the cellar. Every tasting opened a bottle, so each of the 18
+-- above has a matching row here. Nine more bottles were drunk without anyone
+-- writing a note, which is the FK_tasting_id IS NULL case the schema allows.
+INSERT INTO Consumption (consumption_id, FK_wine_id, FK_tasting_id, consumed_date, bottles, occasion) VALUES
+    (1,  1,  1,    '2023-12-25', 1, 'Christmas dinner'),
+    (2,  1,  2,    '2024-06-10', 1, 'Summer barbecue'),
+    (3,  2,  3,    '2023-11-15', 1, 'Sunday roast'),
+    (4,  3,  4,    '2024-01-20', 1, 'Anniversary'),
+    (5,  4,  5,    '2024-07-04', 1, 'Fourth of July'),
+    (6,  5,  6,    '2023-08-30', 1, 'Pizza night'),
+    (7,  6,  7,    '2024-02-14', 1, 'Valentine''s dinner'),
+    (8,  7,  8,    '2024-03-10', 1, 'Cheese course'),
+    (9,  8,  9,    '2023-10-05', 1, 'Steak dinner'),
+    (10, 9,  10,   '2024-05-18', 1, 'Dinner party'),
+    (11, 10, 11,   '2024-08-22', 1, 'Garden lunch'),
+    (12, 11, 12,   '2023-09-12', 1, 'Aperitivo'),
+    (13, 12, 13,   '2024-01-30', 1, 'Risotto night'),
+    (14, 13, 14,   '2024-04-25', 1, 'Weeknight pasta'),
+    (15, 14, 15,   '2023-12-31', 1, 'New Year''s Eve'),
+    (16, 1,  16,   '2024-10-15', 1, 'Sunday lunch'),
+    (17, 7,  17,   '2024-09-08', 1, 'Late supper'),
+    (18, 11, 18,   '2024-11-20', 1, 'Birthday dinner'),
+    -- Opened, no note written.
+    (19, 1,  NULL, '2025-02-08', 1, 'Weeknight dinner'),
+    (20, 1,  NULL, '2025-05-30', 1, 'Friends visiting'),
+    (21, 5,  NULL, '2024-09-14', 1, 'Weeknight dinner'),
+    (22, 5,  NULL, '2025-01-11', 1, 'Weeknight dinner'),
+    (23, 5,  NULL, '2025-04-19', 1, 'Picnic'),
+    (24, 11, NULL, '2025-03-22', 1, 'Weeknight dinner'),
+    (25, 13, NULL, '2024-11-02', 1, 'Weeknight dinner'),
+    (26, 13, NULL, '2025-06-07', 1, 'Weeknight dinner'),
+    (27, 14, NULL, '2025-08-16', 1, 'Last bottle, no notes taken');

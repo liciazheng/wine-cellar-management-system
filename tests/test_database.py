@@ -24,7 +24,14 @@ EXPECTED_ROWS = {
     "Location": 4,
     "Wine": 15,
     "Tasting": 18,
+    "Consumption": 27,
 }
+
+REMAINING = """
+    Wine.bottles_purchased - COALESCE((
+        SELECT SUM(bottles) FROM Consumption WHERE FK_wine_id = Wine.wine_id
+    ), 0)
+"""
 
 
 def split_statements(sql):
@@ -208,13 +215,118 @@ def test_drinking_window_starts_after_the_vintage(db):
 
 
 def test_no_cellar_is_over_capacity(db):
-    over = db.execute("""
-        SELECT Location.cellar_name, SUM(Wine.quantity), Location.capacity
+    over = db.execute(f"""
+        SELECT Location.cellar_name, SUM({REMAINING}), Location.capacity
         FROM Location JOIN Wine ON Location.location_id = Wine.FK_location_id
         GROUP BY Location.location_id
-        HAVING SUM(Wine.quantity) > Location.capacity
+        HAVING SUM({REMAINING}) > Location.capacity
     """).fetchall()
     assert over == []
+
+
+# --- consumption and remaining stock -------------------------------------
+
+def test_no_wine_is_over_consumed(db):
+    """The invariant the triggers exist to protect, checked against the seed."""
+    negative = db.execute(f"""
+        SELECT wine_name, {REMAINING} AS remaining FROM Wine
+        WHERE {REMAINING} < 0
+    """).fetchall()
+    assert negative == []
+
+
+def test_consuming_more_than_purchased_is_rejected(db):
+    """
+    Cross-table and cross-row, so a CHECK cannot express it. Wine 15 has three
+    bottles and none drunk; a fourth has to be refused.
+    """
+    with pytest.raises(sqlite3.IntegrityError, match="exceed bottles purchased"):
+        db.execute("""INSERT INTO Consumption
+                      (consumption_id, FK_wine_id, FK_tasting_id, consumed_date, bottles)
+                      VALUES (99, 15, NULL, '2025-09-01', 4)""")
+
+
+def test_consuming_exactly_the_stock_is_allowed(db):
+    """The trigger must draw the line at over-drawing, not at finishing a wine."""
+    db.execute("""INSERT INTO Consumption
+                  (consumption_id, FK_wine_id, FK_tasting_id, consumed_date, bottles)
+                  VALUES (99, 15, NULL, '2025-09-01', 3)""")
+    remaining = db.execute(
+        f"SELECT {REMAINING} FROM Wine WHERE wine_id = 15").fetchone()[0]
+    assert remaining == 0
+
+
+def test_one_more_bottle_of_a_finished_wine_is_rejected(db):
+    """Wine 14 is already drunk down to zero in the seed data."""
+    with pytest.raises(sqlite3.IntegrityError, match="exceed bottles purchased"):
+        db.execute("""INSERT INTO Consumption
+                      (consumption_id, FK_wine_id, FK_tasting_id, consumed_date, bottles)
+                      VALUES (99, 14, NULL, '2025-09-01', 1)""")
+
+
+def test_updating_a_consumption_beyond_stock_is_rejected(db):
+    """The UPDATE trigger, which the INSERT trigger alone would not cover."""
+    with pytest.raises(sqlite3.IntegrityError, match="exceed bottles purchased"):
+        db.execute("UPDATE Consumption SET bottles = 99 WHERE consumption_id = 1")
+
+
+def test_updating_a_consumption_within_stock_is_allowed(db):
+    """
+    Regression guard on the UPDATE trigger: it must exclude the row being
+    edited from the running total, or raising a row by one would double-count
+    itself and be refused.
+    """
+    db.execute("UPDATE Consumption SET bottles = 2 WHERE consumption_id = 1")
+    remaining = db.execute(
+        f"SELECT {REMAINING} FROM Wine WHERE wine_id = 1").fetchone()[0]
+    assert remaining == 0
+
+
+def test_zero_bottles_is_not_a_consumption(db):
+    with pytest.raises(sqlite3.IntegrityError):
+        db.execute("""INSERT INTO Consumption
+                      (consumption_id, FK_wine_id, FK_tasting_id, consumed_date, bottles)
+                      VALUES (99, 15, NULL, '2025-09-01', 0)""")
+
+
+def test_a_tasting_cannot_be_claimed_by_two_openings(db):
+    with pytest.raises(sqlite3.IntegrityError):
+        db.execute("""INSERT INTO Consumption
+                      (consumption_id, FK_wine_id, FK_tasting_id, consumed_date, bottles)
+                      VALUES (99, 15, 1, '2025-09-01', 1)""")
+
+
+def test_bottles_can_be_drunk_without_a_tasting_note(db):
+    """
+    The nullable side of that UNIQUE. Several bottles were opened with no note,
+    and the schema has to allow more than one of them.
+    """
+    unnoted = db.execute(
+        "SELECT COUNT(*) FROM Consumption WHERE FK_tasting_id IS NULL").fetchone()[0]
+    assert unnoted > 1
+
+
+def test_every_tasting_opened_a_bottle(db):
+    """
+    Sample-data sanity rather than a schema rule: a note in this dataset always
+    came from a bottle in this cellar, so none should be missing its opening.
+    """
+    orphans = db.execute("""
+        SELECT Tasting.tasting_id FROM Tasting
+        LEFT JOIN Consumption ON Consumption.FK_tasting_id = Tasting.tasting_id
+        WHERE Consumption.consumption_id IS NULL
+    """).fetchall()
+    assert orphans == []
+
+
+def test_at_least_one_wine_is_finished_and_one_untouched(db):
+    """Both ends of the range need to be present or the queries go untested."""
+    remaining = [r[0] for r in db.execute(f"SELECT {REMAINING} FROM Wine")]
+    assert 0 in remaining
+    assert any(
+        r == p for r, p in db.execute(
+            f"SELECT {REMAINING}, bottles_purchased FROM Wine")
+    )
 
 
 def test_collector_emails_use_the_reserved_example_domain(db):
