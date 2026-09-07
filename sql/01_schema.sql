@@ -142,3 +142,58 @@ CREATE INDEX idx_wine_drink_window ON Wine(drink_from, drink_until);
 CREATE INDEX idx_tasting_wine      ON Tasting(FK_wine_id);
 CREATE INDEX idx_tasting_taster    ON Tasting(FK_taster_id);
 CREATE INDEX idx_consumption_wine  ON Consumption(FK_wine_id);
+
+
+-- ---------------------------------------------------------------------------
+-- Views
+--
+-- Remaining stock is needed by almost every question worth asking, and
+-- spelling it out inline meant repeating a correlated subquery in each query
+-- that touched it. Once as a view is both clearer and cheaper: the aggregate
+-- over Consumption runs once per wine instead of once per row of the outer
+-- query.
+-- ---------------------------------------------------------------------------
+
+CREATE VIEW WineStock AS
+SELECT
+    Wine.wine_id,
+    Wine.wine_name,
+    Wine.grape_varietal,
+    Wine.appellation,
+    Wine.vintage_year,
+    Wine.FK_collector_id,
+    Wine.FK_producer_id,
+    Wine.FK_location_id,
+    Wine.purchase_date,
+    Wine.purchase_price,
+    Wine.drink_from,
+    Wine.drink_until,
+    Wine.bottles_purchased,
+    COALESCE(drunk.bottles, 0)                        AS bottles_drunk,
+    Wine.bottles_purchased - COALESCE(drunk.bottles, 0) AS bottles_remaining,
+    CASE WHEN Wine.bottles_purchased = COALESCE(drunk.bottles, 0)
+         THEN 1 ELSE 0 END                            AS is_finished
+FROM Wine
+LEFT JOIN (
+    SELECT FK_wine_id, SUM(bottles) AS bottles
+    FROM Consumption
+    GROUP BY FK_wine_id
+) AS drunk ON drunk.FK_wine_id = Wine.wine_id;
+
+-- What is physically on the racks, which is what capacity should be measured
+-- against. A cellar holding wines that have all been drunk is empty.
+CREATE VIEW CellarOccupancy AS
+SELECT
+    Location.location_id,
+    Location.cellar_name,
+    Location.temperature,
+    Location.humidity,
+    Location.capacity,
+    COUNT(WineStock.wine_id)             AS labels_stored,
+    SUM(WineStock.bottles_purchased)     AS bottles_bought,
+    SUM(WineStock.bottles_remaining)     AS bottles_on_hand,
+    ROUND(SUM(WineStock.bottles_remaining) * 100.0 / Location.capacity, 1)
+                                         AS capacity_used_percent
+FROM Location
+LEFT JOIN WineStock ON Location.location_id = WineStock.FK_location_id
+GROUP BY Location.location_id;
