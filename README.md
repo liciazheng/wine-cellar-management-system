@@ -245,7 +245,9 @@ The most useful thing the consumption table makes possible. Rate is bottles drun
 
 Seven of the thirteen wines with a drinking rate will still be sitting in the cellar after their window shuts. Bolgheri Rosso is the worst: at the current pace the last bottle gets opened around 2038, eight years past its best. The opposite failure also shows up — Solaia was drunk to zero in 2025 with its window running to 2041.
 
-Wines with no rate get no verdict: one has never been opened, and a finished wine has nothing left to project.
+Wines with no rate get no verdict, and the query says which input it is missing rather than returning a bare NULL: `untouched`, `finished`, `owned under a year`, or `no purchase date`.
+
+That third case is a guard worth explaining, because the first version of this query got it wrong in the most dangerous way. Annualising from a few weeks of ownership is not a rate — one bottle opened a fortnight after purchase extrapolates to about 26 a year, and a wine bought today with one bottle gone came out at **399 bottles a year**. Not an error, not a NULL, just a plausible-looking number that made the run-out projection meaningless. Anything held under a year now reports no rate at all.
 
 ### Q10 — the drinking log
 
@@ -283,7 +285,7 @@ sql/
 database/
   wine_collection.db ready-to-open SQLite database, built from the scripts above
 tests/
-  test_database.py   73 tests over the schema, constraints, triggers, views and queries
+  test_database.py   77 tests over the schema, constraints, triggers, views and queries
 ```
 
 ## Running it
@@ -305,7 +307,7 @@ pip install pytest
 pytest
 ```
 
-73 tests, and they check more than "does it run":
+77 tests, and they check more than "does it run":
 
 - The SQL scripts build the schema they claim, and the **committed `.db` has not drifted** from them — same columns, same types, same row counts, and the same views, triggers and indexes. A ready-to-open binary is the one file nobody re-reads, so it is the one most likely to fall behind.
 - **Every constraint actually rejects bad data**, rather than merely documenting an intention. A rating of 0 or 6, a half-open drinking window, a window opening before the vintage, a negative price, humidity of 250%, a cellar with no capacity, two collectors sharing an email, a date of `'not-a-date'` or the unpadded `'2025-1-1'` — each is asserted to raise `IntegrityError`.

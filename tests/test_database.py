@@ -285,7 +285,60 @@ def test_q9_verdict_agrees_with_its_own_projection(db):
     # Finished and untouched wines carry no verdict, because there is no rate
     # to project from.
     for row in (r for r in rows if r["verdict"] is None):
-        assert row["runs_out_around"] in ("finished", "untouched")
+        assert row["runs_out_around"] in (
+            "finished", "untouched", "owned under a year", "no purchase date")
+
+
+def run_q9(db):
+    sql = (SQL / "03_queries.sql").read_text(encoding="utf-8")
+    q9 = [s for s in split_statements(sql) if "runs_out_around" in s][0]
+    cursor = db.execute(q9)
+    columns = [d[0] for d in cursor.description]
+    return {r[columns.index("wine_name")]: dict(zip(columns, r))
+            for r in cursor.fetchall()}
+
+
+def test_q9_refuses_to_annualise_a_few_weeks_of_ownership(db):
+    """
+    A wine bought today with one bottle already gone used to extrapolate to
+    hundreds of bottles a year — not an error or a NULL, but a plausible number
+    that was wrong, which then poisoned the run-out projection.
+    """
+    today = db.execute("SELECT date('now')").fetchone()[0]
+    insert_wine(db, wine_id=90, wine_name="Bought Today",
+                purchase_date=today, bottles_purchased=2)
+    db.execute("""INSERT INTO Consumption
+                  (consumption_id, FK_wine_id, FK_tasting_id, consumed_date, bottles)
+                  VALUES (90, 90, NULL, ?, 1)""", (today,))
+
+    row = run_q9(db)["Bought Today"]
+
+    assert row["bottles_per_year"] is None
+    assert row["runs_out_around"] == "owned under a year"
+    assert row["verdict"] is None
+
+
+def test_q9_says_so_when_there_is_no_purchase_date(db):
+    """purchase_date is nullable, and every derived column used to go NULL
+    without the query ever explaining which input was missing."""
+    insert_wine(db, wine_id=91, wine_name="No Date",
+                purchase_date=None, bottles_purchased=2)
+    db.execute("""INSERT INTO Consumption
+                  (consumption_id, FK_wine_id, FK_tasting_id, consumed_date, bottles)
+                  VALUES (91, 91, NULL, '2025-01-01', 1)""")
+
+    row = run_q9(db)["No Date"]
+
+    assert row["years_owned"] is None
+    assert row["bottles_per_year"] is None
+    assert row["runs_out_around"] == "no purchase date"
+    assert row["verdict"] is None
+
+
+def test_q9_still_rates_wines_held_long_enough(db):
+    """The guard must not have silenced the query for ordinary wines."""
+    rated = [r for r in run_q9(db).values() if r["bottles_per_year"] is not None]
+    assert len(rated) >= 10
 
 
 def test_drink_now_query_only_returns_open_windows(db):
@@ -534,6 +587,17 @@ def test_appellations_are_not_duplicated(db):
     with pytest.raises(sqlite3.IntegrityError):
         db.execute("""INSERT INTO Appellation
                       VALUES (99, 'Chianti Classico', 'DOCG', 'Tuscany', 'Italy')""")
+
+
+def test_one_appellation_cannot_hold_two_classifications(db):
+    """
+    The key used to be (name, classification), which let 'Chianti Classico'
+    exist as DOCG and DOC at once and split one place's holdings over two rows.
+    A denomination carries exactly one classification.
+    """
+    with pytest.raises(sqlite3.IntegrityError):
+        db.execute("""INSERT INTO Appellation
+                      VALUES (99, 'Chianti Classico', 'DOC', 'Tuscany', 'Italy')""")
 
 
 def test_wine_cannot_reference_a_missing_appellation(db):
