@@ -42,7 +42,7 @@ erDiagram
     Collector {
         INTEGER collector_id PK
         TEXT    name
-        TEXT    email
+        TEXT    email           "UNIQUE"
     }
 
     Producer {
@@ -64,8 +64,8 @@ erDiagram
         INTEGER location_id PK
         TEXT    cellar_name
         REAL    temperature
-        REAL    humidity
-        INTEGER capacity
+        REAL    humidity       "CHECK 0-100"
+        INTEGER capacity       "CHECK capacity > 0"
     }
 
     Wine {
@@ -77,10 +77,10 @@ erDiagram
         TEXT    wine_name            "label on the bottle"
         TEXT    grape_varietal       "e.g. Sangiovese"
         INTEGER vintage_year
-        TEXT    purchase_date
+        TEXT    purchase_date        "CHECK is a real ISO date"
         REAL    purchase_price
         INTEGER bottles_purchased    "never decrements - see Consumption"
-        INTEGER drink_from           "CHECK drink_until >= drink_from"
+        INTEGER drink_from           "both ends set, or neither"
         INTEGER drink_until
     }
 
@@ -119,7 +119,11 @@ The modelling decisions worth calling out:
 
 Ageing designations stay in `wine_name`. A *Chianti Classico Riserva* is a Chianti Classico DOCG that was aged longer, so treating `Riserva` as its own appellation would split one region's holdings across two rows meaning the same place.
 
-**The drinking window is two integers, not a string.** `drink_from` / `drink_until` instead of `'2023-2028'`, so the project's motivating question is a `BETWEEN` rather than string parsing. A `CHECK (drink_until >= drink_from)` keeps the pair coherent, and ratings are constrained with `CHECK (rating >= 1 AND rating <= 5)`.
+**The drinking window is two integers, not a string.** `drink_from` / `drink_until` instead of `'2023-2028'`, so the project's motivating question is a `BETWEEN` rather than string parsing.
+
+Keeping the pair coherent took three `CHECK`s rather than the obvious one. `drink_until >= drink_from` alone passes when either end is NULL, because a comparison against NULL is NULL and SQLite reads that as satisfied — so a half-open window got stored and then silently matched nothing in every `BETWEEN` built on it. The constraint is now that both ends are set or neither is, that the order holds, and that a window cannot open before the vintage.
+
+Dates get the same treatment. SQLite has no date type, so every date column is guarded by `x IS date(x)`: `date()` returns NULL for anything it cannot parse — including the unpadded `'2025-1-1'` a hand-edited export would produce — and `NULL IS NULL` is false, so the row is refused.
 
 **`Tasting` records who tasted, not just what.** `FK_taster_id` points back to `Collector`, so a note has an author. Bottles get opened by people other than their owner, and without this the "share tasting experiences" case has nowhere to live — 6 of the 18 tastings in the sample data are on someone else's bottle.
 
@@ -143,7 +147,17 @@ BEGIN
 END;
 ```
 
-A companion trigger covers `UPDATE`, excluding the row being edited from the running total — otherwise raising one row by a bottle would count itself twice and be refused.
+There are three such rules, each needing an `INSERT` and an `UPDATE` version — eight triggers in total, since a value that was legal on the way in can be edited into an illegal one afterwards:
+
+| Rule | Why a `CHECK` cannot state it |
+|---|---|
+| Consumption must not exceed bottles purchased | Sums other rows of `Consumption` and reads `Wine` |
+| An opening's note must be about that same wine | Compares two tables' foreign keys against each other |
+| Nothing can be tasted or drunk before it was bought | Reads `Wine.purchase_date` from another table |
+
+The second one is the subtle one. `Consumption.FK_wine_id` and `Consumption.FK_tasting_id` can each point at a row that genuinely exists while still disagreeing with each other — an opening of the Barbaresco carrying the note written about the Chianti. Referential integrity is fully satisfied and the link is still nonsense, so nothing but a trigger catches it.
+
+The `UPDATE` triggers are not copies of the `INSERT` ones. The stock check has to exclude the row being edited from its running total, or raising a single row by one bottle would count itself twice and be refused.
 
 Foreign keys, the drinking window and `Consumption.FK_wine_id` are indexed.
 
@@ -263,13 +277,13 @@ Tuscany dominates by bottles bought — 35 of 62 across its three classification
 
 ```
 sql/
-  01_schema.sql      tables, keys, constraints, triggers, indexes, views
+  01_schema.sql      tables, keys, constraints, 8 triggers, indexes, 2 views
   02_seed_data.sql   sample data
   03_queries.sql     the twelve queries
 database/
   wine_collection.db ready-to-open SQLite database, built from the scripts above
 tests/
-  test_database.py   54 tests over the schema, constraints, triggers, views and queries
+  test_database.py   73 tests over the schema, constraints, triggers, views and queries
 ```
 
 ## Running it
@@ -291,15 +305,15 @@ pip install pytest
 pytest
 ```
 
-23 tests, and they check more than "does it run":
+73 tests, and they check more than "does it run":
 
-- The SQL scripts build the schema they claim, and the **committed `.db` has not drifted** from them — same columns, same types, same row counts.
-- **Every constraint actually rejects bad data.** A rating of 0 or 6, a `drink_until` earlier than `drink_from`, a wine with no name, a wine owned by a nonexistent collector, a tasting by a nonexistent taster — each is asserted to raise `IntegrityError` rather than being silently stored.
-- All eight queries execute and return rows.
-- Q2 is checked both ways: every bottle it returns is inside its drinking window, and every bottle it excludes really is closed or not yet open.
-- The design intents hold in the data — shared tastings exist, and at least one wine has three dated tastings so the evolution case is real.
-- The bug this schema was fixed to avoid stays fixed: no appellation word (`DOCG`, `Riserva`, `Classico` …) has leaked back into `grape_varietal`.
-- No cellar is over capacity, no drinking window starts before its vintage, and every collector email is on the reserved `example.com` domain.
+- The SQL scripts build the schema they claim, and the **committed `.db` has not drifted** from them — same columns, same types, same row counts, and the same views, triggers and indexes. A ready-to-open binary is the one file nobody re-reads, so it is the one most likely to fall behind.
+- **Every constraint actually rejects bad data**, rather than merely documenting an intention. A rating of 0 or 6, a half-open drinking window, a window opening before the vintage, a negative price, humidity of 250%, a cellar with no capacity, two collectors sharing an email, a date of `'not-a-date'` or the unpadded `'2025-1-1'` — each is asserted to raise `IntegrityError`.
+- **Every trigger is tested from both sides**: consumption beyond stock is refused *and* finishing a wine exactly is allowed; an opening cannot borrow a note about another wine *and* can carry the note about its own. A trigger that rejects everything would pass a one-sided test.
+- The `UPDATE` triggers get their own tests, because a value that was legal on the way in can be edited into an illegal one afterwards — and because the running total has to exclude the row being edited, or raising one row by a bottle would count itself twice and be wrongly refused.
+- **All twelve queries execute and return rows.** Q2 is checked both ways: every bottle it returns is inside its window and still in stock, and every bottle it excludes really is closed, unopened, or gone. Q9's verdict is checked against the projection it is derived from, so the two cannot disagree.
+- The views agree with the long way round — `WineStock.bottles_remaining` is compared against the raw subtraction for every wine, and `CellarOccupancy` against a roll-up of the view it summarises.
+- The bugs this schema was fixed to avoid stay fixed: no appellation word has leaked back into `grape_varietal`, no producer name matches a wine name, no ageing designation has crept into an appellation, and the drinking log never subtracts a row count from a bottle count.
 
 ## About the data
 

@@ -102,6 +102,22 @@ def test_shipped_db_matches_the_scripts(db, shipped):
         assert columns(shipped, table) == columns(db, table), f"{table} schema drifted"
 
 
+@pytest.mark.parametrize("kind", ["view", "trigger", "index"])
+def test_shipped_db_has_every_schema_object(db, shipped, kind):
+    """
+    Row counts and columns matched while the shipped .db could still have been
+    built before the views and triggers existed — which is exactly the drift a
+    ready-to-open database invites, since it is a binary nobody re-reads.
+    """
+    def names(conn):
+        return {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = ?", (kind,))}
+
+    from_scripts = names(db)
+    assert from_scripts, f"no {kind}s in the schema, so nothing was compared"
+    assert names(shipped) == from_scripts
+
+
 # --- constraints actually bite -------------------------------------------
 
 def test_rating_above_five_is_rejected(db):
@@ -319,6 +335,162 @@ def test_a_wine_can_have_several_tastings_over_time(db):
 
 
 # --- data sanity ----------------------------------------------------------
+
+# --- rules that reach across rows and tables -------------------------------
+
+def add_note(db, tasting_id=90, wine_id=1, date="2025-09-01"):
+    db.execute("INSERT INTO Tasting VALUES (?, ?, 1, ?, 4, 'note', 'x')",
+               (tasting_id, wine_id, date))
+
+
+def add_opening(db, consumption_id=90, wine_id=15, tasting_id=None,
+                date="2025-09-02", bottles=1):
+    db.execute("""INSERT INTO Consumption
+                  (consumption_id, FK_wine_id, FK_tasting_id, consumed_date, bottles)
+                  VALUES (?, ?, ?, ?, ?)""",
+               (consumption_id, wine_id, tasting_id, date, bottles))
+
+
+def test_an_opening_cannot_borrow_a_note_about_another_wine(db):
+    """
+    Both foreign keys are individually valid while still disagreeing: each
+    points at a row that exists, so referential integrity is satisfied and the
+    link is still nonsense. Only a trigger sees it.
+    """
+    add_note(db, wine_id=1)
+    with pytest.raises(sqlite3.IntegrityError, match="different wine"):
+        add_opening(db, wine_id=15, tasting_id=90)
+
+
+def test_an_opening_can_carry_a_note_about_its_own_wine(db):
+    """The other half: the trigger must not block the legitimate case."""
+    add_note(db, wine_id=15)
+    add_opening(db, wine_id=15, tasting_id=90)
+    assert db.execute(
+        "SELECT COUNT(*) FROM Consumption WHERE FK_tasting_id = 90").fetchone()[0] == 1
+
+
+def test_editing_an_opening_onto_a_foreign_note_is_rejected(db):
+    """The UPDATE half of the same rule."""
+    add_note(db, wine_id=1)
+    add_opening(db, wine_id=1, tasting_id=90, date="2025-09-02")
+    with pytest.raises(sqlite3.IntegrityError, match="different wine"):
+        db.execute("UPDATE Consumption SET FK_wine_id = 15 WHERE consumption_id = 90")
+
+
+def test_a_bottle_cannot_be_drunk_before_it_was_bought(db):
+    purchased = db.execute(
+        "SELECT purchase_date FROM Wine WHERE wine_id = 15").fetchone()[0]
+    assert purchased > "2015-01-01"
+    with pytest.raises(sqlite3.IntegrityError, match="before it was purchased"):
+        add_opening(db, date="2015-01-01")
+
+
+def test_a_wine_cannot_be_tasted_before_it_was_bought(db):
+    with pytest.raises(sqlite3.IntegrityError, match="before it was purchased"):
+        add_note(db, wine_id=1, date="2015-01-01")
+
+
+def test_dates_must_be_real_iso_dates(db):
+    with pytest.raises(sqlite3.IntegrityError):
+        add_opening(db, date="not-a-date")
+
+
+def test_dates_must_be_zero_padded(db):
+    """
+    date('2025-1-1') is NULL in SQLite, so the CHECK catches the unpadded form
+    that a hand-typed spreadsheet export would produce.
+    """
+    with pytest.raises(sqlite3.IntegrityError):
+        add_opening(db, date="2025-1-1")
+
+
+def test_a_drinking_window_cannot_be_half_open(db):
+    """
+    `drink_until >= drink_from` alone let this through: with one end NULL the
+    comparison is NULL, which SQLite treats as a pass, and every BETWEEN built
+    on the column then silently matched nothing.
+    """
+    with pytest.raises(sqlite3.IntegrityError):
+        insert_wine(db, drink_from=2025, drink_until=None)
+    with pytest.raises(sqlite3.IntegrityError):
+        insert_wine(db, drink_from=None, drink_until=2030)
+
+
+def test_a_window_may_be_left_entirely_unrecorded(db):
+    """Both ends NULL is the legitimate "not assessed yet" case."""
+    insert_wine(db, drink_from=None, drink_until=None)
+    assert db.execute(
+        "SELECT drink_from FROM Wine WHERE wine_id = 99").fetchone()[0] is None
+
+
+def test_collectors_cannot_share_an_email(db):
+    existing = db.execute("SELECT email FROM Collector LIMIT 1").fetchone()[0]
+    with pytest.raises(sqlite3.IntegrityError):
+        db.execute("INSERT INTO Collector VALUES (90, 'Impostor', ?)", (existing,))
+
+
+def test_a_cellar_must_have_room_in_it(db):
+    """CellarOccupancy divides by capacity, and zero would give NULL not error."""
+    with pytest.raises(sqlite3.IntegrityError):
+        db.execute("INSERT INTO Location VALUES (90, 'Broken', 14.0, 70.0, 0)")
+
+
+def test_humidity_is_a_percentage(db):
+    with pytest.raises(sqlite3.IntegrityError):
+        db.execute("INSERT INTO Location VALUES (90, 'Swamp', 14.0, 250.0, 100)")
+
+
+def test_a_bottle_cannot_cost_a_negative_amount(db):
+    with pytest.raises(sqlite3.IntegrityError):
+        insert_wine(db, purchase_price=-5.0)
+
+
+def test_a_window_cannot_open_before_the_vintage(db):
+    with pytest.raises(sqlite3.IntegrityError):
+        insert_wine(db, vintage_year=2020, drink_from=2015, drink_until=2030)
+
+
+def test_an_empty_cellar_reads_as_empty_not_unknown(db):
+    """
+    The LEFT JOIN in CellarOccupancy exists so a cellar with nothing in it
+    still appears. Without COALESCE, SUM() over no rows returned NULL and
+    undid that.
+    """
+    db.execute("INSERT INTO Location VALUES (91, 'Empty Cellar', 14.0, 70.0, 100)")
+    row = db.execute("""
+        SELECT labels_stored, bottles_bought, bottles_on_hand, capacity_used_percent
+        FROM CellarOccupancy WHERE location_id = 91
+    """).fetchone()
+    assert row == (0, 0, 0, 0.0)
+
+
+def test_the_drinking_log_never_subtracts_rows_from_bottles(db):
+    """
+    Q10 counts openings and bottles separately. It used to do
+    SUM(bottles) - COUNT(FK_tasting_id), mixing the two; every sample row
+    opens one bottle so they agreed and the error was invisible.
+    """
+    add_note(db, wine_id=15)
+    add_opening(db, wine_id=15, tasting_id=90, bottles=2)
+
+    sql = (SQL / "03_queries.sql").read_text(encoding="utf-8")
+    q10 = [s for s in split_statements(sql) if "openings_without_a_note" in s][0]
+    cursor = db.execute(q10)
+    columns = [d[0] for d in cursor.description]
+    rows = [dict(zip(columns, r)) for r in cursor.fetchall()]
+
+    for row in rows:
+        assert row["openings"] == row["openings_with_a_note"] + row["openings_without_a_note"]
+        assert row["bottles_opened"] >= row["openings"]
+
+    year = next(r for r in rows if r["year"] == "2025")
+    truth = db.execute("""
+        SELECT COUNT(*) FROM Consumption
+        WHERE strftime('%Y', consumed_date) = '2025' AND FK_tasting_id IS NULL
+    """).fetchone()[0]
+    assert year["openings_without_a_note"] == truth
+
 
 # --- appellations -----------------------------------------------------------
 

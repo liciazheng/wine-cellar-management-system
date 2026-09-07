@@ -3,10 +3,18 @@
 -- Seven entities: Collector, Producer, Appellation, Location, Wine, Tasting,
 -- Consumption
 
+-- A note on dates. SQLite has no date type, so every date here is ISO-8601
+-- text guarded by `x IS date(x)`. date() returns NULL for anything it cannot
+-- parse — including '2025-1-1', which is missing its zero padding — and
+-- NULL IS NULL is false, so the CHECK rejects it. Without this the column
+-- would accept 'not-a-date' and every julianday() calculation built on it
+-- would silently return NULL.
 CREATE TABLE Collector (
     collector_id INTEGER PRIMARY KEY,
     name         TEXT NOT NULL,
-    email        TEXT NOT NULL
+    -- Two collectors sharing an address would make "whose note is this" and
+    -- "who do I contact about this bottle" ambiguous.
+    email        TEXT NOT NULL UNIQUE
 );
 
 CREATE TABLE Producer (
@@ -39,8 +47,10 @@ CREATE TABLE Location (
     location_id INTEGER PRIMARY KEY,
     cellar_name TEXT NOT NULL,
     temperature REAL,
-    humidity    REAL,
-    capacity    INTEGER
+    humidity    REAL CHECK (humidity IS NULL OR humidity BETWEEN 0 AND 100),
+    -- CellarOccupancy divides by this. A zero would not raise, it would
+    -- quietly hand back a NULL utilisation figure.
+    capacity    INTEGER NOT NULL CHECK (capacity > 0)
 );
 
 CREATE TABLE Wine (
@@ -66,8 +76,8 @@ CREATE TABLE Wine (
     grape_varietal  TEXT,
 
     vintage_year    INTEGER,
-    purchase_date   TEXT,
-    purchase_price  REAL,
+    purchase_date   TEXT CHECK (purchase_date IS date(purchase_date)),
+    purchase_price  REAL CHECK (purchase_price IS NULL OR purchase_price >= 0),
 
     -- How many bottles were bought, which never changes. What is left in the
     -- cellar is this minus everything recorded in Consumption. An earlier
@@ -85,7 +95,14 @@ CREATE TABLE Wine (
     FOREIGN KEY (FK_producer_id)    REFERENCES Producer(producer_id),
     FOREIGN KEY (FK_location_id)    REFERENCES Location(location_id),
     FOREIGN KEY (FK_appellation_id) REFERENCES Appellation(appellation_id),
-    CHECK (drink_until >= drink_from)
+
+    -- A window is either fully known or not recorded. `drink_until >=
+    -- drink_from` alone was not enough: with one end NULL the comparison is
+    -- NULL, which SQLite treats as a pass, so a half-open window slipped
+    -- through and then silently failed every BETWEEN that used it.
+    CHECK ((drink_from IS NULL) = (drink_until IS NULL)),
+    CHECK (drink_until IS NULL OR drink_until >= drink_from),
+    CHECK (drink_from IS NULL OR vintage_year IS NULL OR drink_from >= vintage_year)
 );
 
 CREATE TABLE Tasting (
@@ -97,7 +114,7 @@ CREATE TABLE Tasting (
     -- this?" — which is the whole point of sharing tasting experiences.
     FK_taster_id  INTEGER NOT NULL,
 
-    tasting_date  TEXT,
+    tasting_date  TEXT CHECK (tasting_date IS date(tasting_date)),
     rating        INTEGER CHECK (rating >= 1 AND rating <= 5),
     tasting_notes TEXT,
     food_pairing  TEXT,
@@ -117,7 +134,7 @@ CREATE TABLE Consumption (
     -- but a given note cannot be claimed by two openings.
     FK_tasting_id  INTEGER UNIQUE,
 
-    consumed_date  TEXT NOT NULL,
+    consumed_date  TEXT NOT NULL CHECK (consumed_date IS date(consumed_date)),
     bottles        INTEGER NOT NULL DEFAULT 1 CHECK (bottles > 0),
     occasion       TEXT,
 
@@ -128,9 +145,20 @@ CREATE TABLE Consumption (
     FOREIGN KEY (FK_tasting_id) REFERENCES Tasting(tasting_id)
 );
 
--- You cannot drink more bottles than you bought. That spans rows and tables,
--- so a CHECK cannot express it and it has to be a trigger. Without this the
--- schema would happily record a cellar holding negative stock.
+-- ---------------------------------------------------------------------------
+-- Triggers
+--
+-- Everything below is a rule a CHECK cannot state, because it reaches other
+-- rows or other tables. A CHECK sees only the row being written.
+--   * within_stock  — consumption must not exceed what was purchased
+--   * matches_wine  — a note attached to an opening must be about that wine
+--   * after_purchase — nothing can be tasted or drunk before it was bought
+-- Each rule needs an INSERT and an UPDATE version, since a value that was
+-- legal on the way in can be edited into an illegal one afterwards.
+-- ---------------------------------------------------------------------------
+
+-- You cannot drink more bottles than you bought. Without this the schema
+-- would happily record a cellar holding negative stock.
 CREATE TRIGGER trg_consumption_insert_within_stock
 BEFORE INSERT ON Consumption
 BEGIN
@@ -156,6 +184,62 @@ BEGIN
           ) > (
               SELECT bottles_purchased FROM Wine WHERE wine_id = NEW.FK_wine_id
           );
+END;
+
+-- Both foreign keys on Consumption are valid on their own while still
+-- disagreeing with each other: an opening of wine 15 could carry the note
+-- written about wine 1. Referential integrity does not catch that, because
+-- each key points at a row that exists.
+CREATE TRIGGER trg_consumption_insert_matches_wine
+BEFORE INSERT ON Consumption
+WHEN NEW.FK_tasting_id IS NOT NULL
+BEGIN
+    SELECT RAISE(ABORT, 'tasting note is about a different wine')
+    WHERE (SELECT FK_wine_id FROM Tasting WHERE tasting_id = NEW.FK_tasting_id)
+          <> NEW.FK_wine_id;
+END;
+
+CREATE TRIGGER trg_consumption_update_matches_wine
+BEFORE UPDATE ON Consumption
+WHEN NEW.FK_tasting_id IS NOT NULL
+BEGIN
+    SELECT RAISE(ABORT, 'tasting note is about a different wine')
+    WHERE (SELECT FK_wine_id FROM Tasting WHERE tasting_id = NEW.FK_tasting_id)
+          <> NEW.FK_wine_id;
+END;
+
+-- A bottle cannot leave the cellar before it arrived.
+CREATE TRIGGER trg_consumption_insert_after_purchase
+BEFORE INSERT ON Consumption
+BEGIN
+    SELECT RAISE(ABORT, 'bottle drunk before it was purchased')
+    WHERE NEW.consumed_date
+          < (SELECT purchase_date FROM Wine WHERE wine_id = NEW.FK_wine_id);
+END;
+
+CREATE TRIGGER trg_consumption_update_after_purchase
+BEFORE UPDATE ON Consumption
+BEGIN
+    SELECT RAISE(ABORT, 'bottle drunk before it was purchased')
+    WHERE NEW.consumed_date
+          < (SELECT purchase_date FROM Wine WHERE wine_id = NEW.FK_wine_id);
+END;
+
+-- And it cannot be tasted before it arrived either.
+CREATE TRIGGER trg_tasting_insert_after_purchase
+BEFORE INSERT ON Tasting
+BEGIN
+    SELECT RAISE(ABORT, 'wine tasted before it was purchased')
+    WHERE NEW.tasting_date
+          < (SELECT purchase_date FROM Wine WHERE wine_id = NEW.FK_wine_id);
+END;
+
+CREATE TRIGGER trg_tasting_update_after_purchase
+BEFORE UPDATE ON Tasting
+BEGIN
+    SELECT RAISE(ABORT, 'wine tasted before it was purchased')
+    WHERE NEW.tasting_date
+          < (SELECT purchase_date FROM Wine WHERE wine_id = NEW.FK_wine_id);
 END;
 
 -- The foreign keys carry every join in 03_queries.sql. The drinking-window
@@ -222,11 +306,14 @@ SELECT
     Location.temperature,
     Location.humidity,
     Location.capacity,
-    COUNT(WineStock.wine_id)             AS labels_stored,
-    SUM(WineStock.bottles_purchased)     AS bottles_bought,
-    SUM(WineStock.bottles_remaining)     AS bottles_on_hand,
-    ROUND(SUM(WineStock.bottles_remaining) * 100.0 / Location.capacity, 1)
-                                         AS capacity_used_percent
+    COUNT(WineStock.wine_id)                     AS labels_stored,
+    -- COALESCE, or the LEFT JOIN is pointless: it is there so a cellar with
+    -- nothing in it still appears, and then SUM() over no rows returns NULL
+    -- and undoes that. An empty cellar is 0% full, not unknown.
+    COALESCE(SUM(WineStock.bottles_purchased), 0) AS bottles_bought,
+    COALESCE(SUM(WineStock.bottles_remaining), 0) AS bottles_on_hand,
+    ROUND(COALESCE(SUM(WineStock.bottles_remaining), 0) * 100.0
+          / Location.capacity, 1)                AS capacity_used_percent
 FROM Location
 LEFT JOIN WineStock ON Location.location_id = WineStock.FK_location_id
 GROUP BY Location.location_id;

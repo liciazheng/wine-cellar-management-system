@@ -200,14 +200,23 @@ ORDER BY bottles_per_year DESC, WineStock.wine_name;
 
 
 -- Q10. The drinking log, by year.
---      How many bottles were opened, how many produced a written note, and
---      what the notes averaged. The gap between bottles and notes is the
---      reason FK_tasting_id is nullable.
+--      How many bottles were opened, how many openings produced a written
+--      note, and what those notes averaged. The gap is the reason
+--      FK_tasting_id is nullable.
+--
+--      Openings and bottles are counted separately and never subtracted from
+--      each other. An earlier version did `SUM(bottles) - COUNT(FK_tasting_id)`,
+--      which mixed a bottle count with a row count. Every row in the sample
+--      data opens exactly one bottle, so the two happened to agree and the
+--      error stayed invisible until a single opening covered two bottles.
 SELECT
     strftime('%Y', Consumption.consumed_date) AS year,
+    COUNT(*)                                  AS openings,
     SUM(Consumption.bottles)                  AS bottles_opened,
-    COUNT(Consumption.FK_tasting_id)          AS with_a_note,
-    SUM(Consumption.bottles) - COUNT(Consumption.FK_tasting_id) AS without_a_note,
+    COUNT(Consumption.FK_tasting_id)          AS openings_with_a_note,
+    COUNT(*) - COUNT(Consumption.FK_tasting_id) AS openings_without_a_note,
+    SUM(CASE WHEN Consumption.FK_tasting_id IS NULL
+             THEN Consumption.bottles ELSE 0 END) AS bottles_without_a_note,
     ROUND(AVG(Tasting.rating), 2)             AS avg_rating_that_year
 FROM Consumption
 LEFT JOIN Tasting ON Consumption.FK_tasting_id = Tasting.tasting_id
