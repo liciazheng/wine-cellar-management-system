@@ -7,6 +7,12 @@
 # Office lock files
 ~$*
 
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+
 # OS
 Thumbs.db
 desktop.ini

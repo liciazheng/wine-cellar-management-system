@@ -13,7 +13,10 @@ SELECT
     Producer.producer_name,
     Producer.region,
     Collector.name AS collector_name,
-    Wine.quantity,
+    Wine.bottles_purchased,
+    Wine.bottles_purchased - COALESCE((
+        SELECT SUM(bottles) FROM Consumption WHERE FK_wine_id = Wine.wine_id
+    ), 0) AS bottles_remaining,
     Wine.purchase_price
 FROM Wine
 JOIN Producer  ON Wine.FK_producer_id  = Producer.producer_id
@@ -32,7 +35,9 @@ SELECT
     Producer.producer_name,
     Collector.name AS collector_name,
     Location.cellar_name,
-    Wine.quantity,
+    Wine.bottles_purchased - COALESCE((
+        SELECT SUM(bottles) FROM Consumption WHERE FK_wine_id = Wine.wine_id
+    ), 0) AS bottles_remaining,
     Wine.drink_from,
     Wine.drink_until,
     Wine.drink_until - CAST(strftime('%Y', 'now') AS INTEGER) AS years_left,
@@ -46,6 +51,10 @@ JOIN Producer  ON Wine.FK_producer_id  = Producer.producer_id
 JOIN Collector ON Wine.FK_collector_id = Collector.collector_id
 JOIN Location  ON Wine.FK_location_id  = Location.location_id
 WHERE CAST(strftime('%Y', 'now') AS INTEGER) BETWEEN Wine.drink_from AND Wine.drink_until
+  -- A wine you have already finished is not something to drink this year.
+  AND Wine.bottles_purchased > COALESCE((
+        SELECT SUM(bottles) FROM Consumption WHERE FK_wine_id = Wine.wine_id
+      ), 0)
 ORDER BY years_left, Wine.wine_name;
 
 
@@ -70,26 +79,33 @@ ORDER BY avg_rating DESC, num_tastings DESC;
 --     Only possible now that the varietal is its own column.
 SELECT
     Wine.grape_varietal,
-    COUNT(DISTINCT Wine.wine_id) AS labels,
-    SUM(Wine.quantity)           AS total_bottles,
-    ROUND(SUM(Wine.purchase_price * Wine.quantity), 2) AS total_value,
-    ROUND(AVG(Wine.purchase_price), 2)                 AS avg_bottle_price,
-    COUNT(DISTINCT Wine.appellation)                   AS appellations
+    COUNT(DISTINCT Wine.wine_id)     AS labels,
+    SUM(Wine.bottles_purchased)      AS bottles_bought,
+    ROUND(SUM(Wine.purchase_price * Wine.bottles_purchased), 2) AS total_spend,
+    ROUND(AVG(Wine.purchase_price), 2)                          AS avg_bottle_price,
+    COUNT(DISTINCT Wine.appellation)                            AS appellations
 FROM Wine
 GROUP BY Wine.grape_varietal
-ORDER BY total_bottles DESC;
+ORDER BY bottles_bought DESC;
 
 
 -- Q5. Cellar utilisation and storage conditions.
+--     Utilisation has to count what is actually on the racks, so bottles
+--     already drunk are subtracted before the capacity ratio is taken.
 SELECT
     Location.location_id,
     Location.cellar_name,
     Location.temperature,
     Location.humidity,
-    COUNT(Wine.wine_id) AS total_wines,
-    SUM(Wine.quantity)  AS total_bottles,
+    COUNT(Wine.wine_id)          AS labels_stored,
+    SUM(Wine.bottles_purchased)  AS bottles_bought,
+    SUM(Wine.bottles_purchased - COALESCE((
+        SELECT SUM(bottles) FROM Consumption WHERE FK_wine_id = Wine.wine_id
+    ), 0))                       AS bottles_on_hand,
     Location.capacity,
-    (SUM(Wine.quantity) * 100.0 / Location.capacity) AS capacity_used_percent
+    ROUND(SUM(Wine.bottles_purchased - COALESCE((
+        SELECT SUM(bottles) FROM Consumption WHERE FK_wine_id = Wine.wine_id
+    ), 0)) * 100.0 / Location.capacity, 1) AS capacity_used_percent
 FROM Location
 JOIN Wine ON Location.location_id = Wine.FK_location_id
 GROUP BY Location.location_id
@@ -139,11 +155,11 @@ SELECT
     Collector.collector_id,
     Collector.name,
     Collector.email,
-    COUNT(DISTINCT Wine.wine_id) AS unique_wines,
-    SUM(Wine.quantity)           AS total_bottles,
-    ROUND(SUM(Wine.purchase_price * Wine.quantity), 2) AS total_investment,
-    ROUND(AVG(Wine.purchase_price), 2)                 AS avg_bottle_price,
-    COUNT(DISTINCT Producer.producer_id)               AS num_producers
+    COUNT(DISTINCT Wine.wine_id)     AS unique_wines,
+    SUM(Wine.bottles_purchased)      AS bottles_bought,
+    ROUND(SUM(Wine.purchase_price * Wine.bottles_purchased), 2) AS total_investment,
+    ROUND(AVG(Wine.purchase_price), 2)                          AS avg_bottle_price,
+    COUNT(DISTINCT Producer.producer_id)                        AS num_producers
 FROM Collector
 JOIN Wine     ON Collector.collector_id = Wine.FK_collector_id
 JOIN Producer ON Wine.FK_producer_id    = Producer.producer_id

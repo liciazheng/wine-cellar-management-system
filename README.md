@@ -16,23 +16,26 @@ I grew up around people who collect wine and got curious about the difference be
 
 ## Schema
 
-Five tables, third normal form:
+Six tables, third normal form:
 
 | Table | Rows | Description |
 |---|---|---|
 | `Collector` | 4 | Collection owners, who are also the tasters |
 | `Producer` | 6 | Wineries, with region and country |
 | `Location` | 4 | Storage areas, with temperature, humidity, capacity |
-| `Wine` | 15 | Bottles — name, grape, appellation, vintage, price, quantity, drinking window |
+| `Wine` | 15 | Labels — name, grape, appellation, vintage, price, bottles bought, drinking window |
 | `Tasting` | 18 | Dated tasting events — taster, 1–5 rating, notes, food pairing |
+| `Consumption` | 27 | Bottles leaving the cellar, optionally tied to the note they produced |
 
 ```mermaid
 erDiagram
-    Collector ||--o{ Wine    : owns
-    Producer  ||--o{ Wine    : makes
-    Location  ||--o{ Wine    : stores
-    Wine      ||--o{ Tasting : "is tasted in"
-    Collector ||--o{ Tasting : "writes note for"
+    Collector ||--o{ Wine        : owns
+    Producer  ||--o{ Wine        : makes
+    Location  ||--o{ Wine        : stores
+    Wine      ||--o{ Tasting     : "is tasted in"
+    Collector ||--o{ Tasting     : "writes note for"
+    Wine      ||--o{ Consumption : "is drunk in"
+    Tasting   |o--o| Consumption : "note came from"
 
     Collector {
         INTEGER collector_id PK
@@ -66,7 +69,7 @@ erDiagram
         INTEGER vintage_year
         TEXT    purchase_date
         REAL    purchase_price
-        INTEGER quantity
+        INTEGER bottles_purchased  "never decrements - see Consumption"
         INTEGER drink_from         "CHECK drink_until >= drink_from"
         INTEGER drink_until
     }
@@ -79,6 +82,15 @@ erDiagram
         INTEGER rating          "CHECK between 1 and 5"
         TEXT    tasting_notes
         TEXT    food_pairing
+    }
+
+    Consumption {
+        INTEGER consumption_id PK
+        INTEGER FK_wine_id     FK
+        INTEGER FK_tasting_id  FK "nullable and UNIQUE"
+        TEXT    consumed_date
+        INTEGER bottles           "CHECK bottles > 0"
+        TEXT    occasion
     }
 ```
 
@@ -94,7 +106,29 @@ Three modelling decisions worth calling out:
 
 **`Tasting` records who tasted, not just what.** `FK_taster_id` points back to `Collector`, so a note has an author. Bottles get opened by people other than their owner, and without this the "share tasting experiences" case has nowhere to live — 6 of the 18 tastings in the sample data are on someone else's bottle.
 
-Foreign keys and the drinking window are indexed.
+**Stock is derived, not stored.** `bottles_purchased` never changes; what is left is that minus everything in `Consumption`. An earlier version of this schema had a single `quantity` column that stayed put while bottles were being tasted, so the number silently meant "bought" while reading like "in stock" — a cellar that never empties. Of 62 bottles bought, 27 have been drunk and 35 are on the racks.
+
+`Consumption` carries a nullable, `UNIQUE` `FK_tasting_id`. SQLite allows many NULLs in a unique column, which is exactly the behaviour wanted: any number of bottles can be opened without a note, but no single note can be claimed by two openings. It deliberately has no collector column — whose cellar the bottle left is a fact about the `Wine`, and who drank it is a fact about the `Tasting`, so storing either here would just duplicate them.
+
+**You cannot drink more than you bought, and the database enforces it.** That rule spans rows and tables, so a `CHECK` cannot express it:
+
+```sql
+CREATE TRIGGER trg_consumption_insert_within_stock
+BEFORE INSERT ON Consumption
+BEGIN
+    SELECT RAISE(ABORT, 'consumption would exceed bottles purchased')
+    WHERE NEW.bottles + (
+              SELECT COALESCE(SUM(bottles), 0) FROM Consumption
+              WHERE FK_wine_id = NEW.FK_wine_id
+          ) > (
+              SELECT bottles_purchased FROM Wine WHERE wine_id = NEW.FK_wine_id
+          );
+END;
+```
+
+A companion trigger covers `UPDATE`, excluding the row being edited from the running total — otherwise raising one row by a bottle would count itself twice and be refused.
+
+Foreign keys, the drinking window and `Consumption.FK_wine_id` are indexed.
 
 ## Queries
 
@@ -106,30 +140,32 @@ Foreign keys and the drinking window are indexed.
 | Q2 | **What should I drink this year?** | `BETWEEN` on the window, `CASE` urgency bucket, 4-table join |
 | Q3 | Wine ranking by average score | `GROUP BY` + `HAVING` |
 | Q4 | Holdings by grape varietal | aggregation over the split-out varietal column |
-| Q5 | Cellar utilisation | aggregate arithmetic against capacity |
+| Q5 | Cellar utilisation | correlated subquery for remaining stock, against capacity |
 | Q6 | Highly rated tastings, with author | two joins to `Collector` from one row |
 | Q7 | Notes on someone else's bottle | self-referencing filter on the same two joins |
 | Q8 | Collector portfolio value | `COUNT DISTINCT`, `ROUND`, derived totals |
 
 ### Q2 — what should I drink this year
 
-Reads the current year from `strftime('%Y', 'now')`, so it stays correct without editing. Run in 2026, 13 of the 15 wines are inside their window:
+Reads the current year from `strftime('%Y', 'now')`, so it stays correct without editing. Run in 2026 it returns 12 wines, with bottles counted as what is left rather than what was bought:
 
-| Wine | Vintage | Producer | Bottles | Drink until | Years left | Urgency |
+| Wine | Vintage | Producer | Bottles left | Drink until | Years left | Urgency |
 |---|---|---|---|---|---|---|
-| Chianti Classico | 2017 | Fontodi | 5 | 2027 | 1 | **drink now** |
-| Chianti Classico | 2018 | Antinori | 6 | 2028 | 2 | drink soon |
-| Valpolicella Superiore | 2020 | Allegrini | 6 | 2028 | 2 | drink soon |
-| Chianti Classico Riserva | 2019 | Fontodi | 8 | 2029 | 3 | drink soon |
-| Bolgheri Rosso | 2020 | Sassicaia | 5 | 2030 | 4 | holding well |
+| Chianti Classico | 2017 | Fontodi | 1 | 2027 | 1 | **drink now** |
+| Chianti Classico | 2018 | Antinori | 1 | 2028 | 2 | drink soon |
+| Valpolicella Superiore | 2020 | Allegrini | 3 | 2028 | 2 | drink soon |
+| Chianti Classico Riserva | 2019 | Fontodi | 5 | 2029 | 3 | drink soon |
+| Bolgheri Rosso | 2020 | Sassicaia | 4 | 2030 | 4 | holding well |
 | … | | | | | | |
-| Solaia | 2016 | Antinori | 2 | 2041 | 15 | holding well |
+| Barolo Riserva | 2015 | Marchesi di Barolo | 1 | 2040 | 14 | holding well |
 
-The two absent bottles — a 2019 Bolgheri Superiore (2029–2039) and a 2020 Brunello (2028–2038) — are correctly excluded as not yet open.
+Three wines are absent, for two different reasons. A 2019 Bolgheri Superiore (2029–2039) and a 2020 Brunello (2028–2038) are not yet open. **Solaia is in its window but gone** — both bottles were drunk, the second one without a note. Before consumption tracking existed this query recommended it anyway, which is the kind of wrong answer a schema can produce while every individual value in it is correct.
 
 ### Q4 — holdings by grape
 
-| Grape | Labels | Bottles | Total value | Appellations |
+Bottles bought, since this one is about what the collection is made of:
+
+| Grape | Labels | Bottles bought | Total spend | Appellations |
 |---|---|---|---|---|
 | Sangiovese | 5 | 26 | $1,748.00 | 3 |
 | Nebbiolo | 5 | 15 | $1,901.00 | 3 |
@@ -138,7 +174,7 @@ The two absent bottles — a 2019 Bolgheri Superiore (2029–2039) and a 2020 Br
 
 ### Q8 — collector portfolios
 
-| Collector | Unique wines | Bottles | Total investment |
+| Collector | Unique wines | Bottles bought | Total investment |
 |---|---|---|---|
 | Michael Brown | 4 | 15 | $1,732.00 |
 | Sarah Davis | 3 | 16 | $1,400.00 |
@@ -147,24 +183,26 @@ The two absent bottles — a 2019 Bolgheri Superiore (2029–2039) and a 2020 Br
 
 ### Q5 — cellar utilisation
 
-| Cellar | Bottles | Capacity | Used |
-|---|---|---|---|
-| Wine Refrigerator | 11 | 50 | 22.0% |
-| Guest House Cellar | 16 | 100 | 16.0% |
-| Basement Storage | 17 | 200 | 8.5% |
-| Main Cellar | 18 | 500 | 3.6% |
+Bottles on hand, since this one is about how full the racks are. Both columns are shown because the gap between them is the point:
+
+| Cellar | Bought | On hand | Capacity | Used |
+|---|---|---|---|---|
+| Wine Refrigerator | 11 | 6 | 50 | 12.0% |
+| Guest House Cellar | 16 | 12 | 100 | 12.0% |
+| Basement Storage | 17 | 8 | 200 | 4.0% |
+| Main Cellar | 18 | 9 | 500 | 1.8% |
 
 ## Layout
 
 ```
 sql/
-  01_schema.sql      tables, keys, constraints, indexes
+  01_schema.sql      tables, keys, constraints, triggers, indexes
   02_seed_data.sql   sample data
   03_queries.sql     the eight queries
 database/
   wine_collection.db ready-to-open SQLite database, built from the scripts above
 tests/
-  test_database.py   23 tests over the schema, constraints and queries
+  test_database.py   35 tests over the schema, constraints, triggers and queries
 ```
 
 ## Running it
@@ -205,4 +243,4 @@ pytest
 - The **ratings, tasting notes and food pairings** are written to look like tasting notes. Nobody tasted these wines. They are not opinions about any real wine.
 - The **producer names, grape varieties and appellations** are real — they are reference data, the same way a country list is, and they are there so the joins operate on values that behave like the real thing.
 
-The dataset is sized to demonstrate the schema and the queries, not to be analysed: 15 wines and 18 tastings will not support any conclusion about wine.
+The dataset is sized to demonstrate the schema and the queries, not to be analysed: 15 wines, 18 tastings and 27 opened bottles will not support any conclusion about wine.
