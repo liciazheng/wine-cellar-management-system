@@ -3,12 +3,14 @@
 -- Seven entities: Collector, Producer, Appellation, Location, Wine, Tasting,
 -- Consumption
 
--- A note on dates. SQLite has no date type, so every date here is ISO-8601
--- text guarded by `x IS date(x)`. date() returns NULL for anything it cannot
--- parse — including '2025-1-1', which is missing its zero padding — and
--- NULL IS NULL is false, so the CHECK rejects it. Without this the column
--- would accept 'not-a-date' and every julianday() calculation built on it
--- would silently return NULL.
+-- Dates. SQLite has no date type, so every date column here is ISO-8601 text
+-- guarded by `x IS date(x)`. date() returns NULL for anything it cannot parse
+-- — including '2025-1-1', which is missing its zero padding — and NULL IS NULL
+-- is false, so the CHECK rejects it. Without that guard a column would accept
+-- 'not-a-date' and every julianday() calculation built on it would silently
+-- return NULL. It also makes plain `<` comparison safe, which the date
+-- triggers below rely on: ISO-8601 sorts correctly as text.
+
 CREATE TABLE Collector (
     collector_id INTEGER PRIMARY KEY,
     name         TEXT NOT NULL,
@@ -37,7 +39,7 @@ CREATE TABLE Producer (
 CREATE TABLE Appellation (
     appellation_id   INTEGER PRIMARY KEY,
     appellation_name TEXT NOT NULL,
-    classification   TEXT CHECK (classification IN ('DOCG', 'DOC', 'IGT')),
+    classification   TEXT NOT NULL CHECK (classification IN ('DOCG', 'DOC', 'IGT')),
     region           TEXT NOT NULL,
     country          TEXT NOT NULL,
     -- The name alone, not the name-and-classification pair. A denomination
@@ -154,11 +156,14 @@ CREATE TABLE Consumption (
 --
 -- Everything below is a rule a CHECK cannot state, because it reaches other
 -- rows or other tables. A CHECK sees only the row being written.
---   * within_stock  — consumption must not exceed what was purchased
---   * matches_wine  — a note attached to an opening must be about that wine
+--   * within_stock   — consumption must not exceed what was purchased
+--   * matches_wine   — a note attached to an opening must be about that wine
 --   * after_purchase — nothing can be tasted or drunk before it was bought
--- Each rule needs an INSERT and an UPDATE version, since a value that was
--- legal on the way in can be edited into an illegal one afterwards.
+-- Each rule needs an INSERT and an UPDATE version, since SQLite has no
+-- `BEFORE INSERT OR UPDATE` and a value that was legal on the way in can be
+-- edited into an illegal one afterwards. Two of the rules also need guarding
+-- from the Wine side — see trg_wine_update_stays_consistent — because editing
+-- the parent row can break an invariant without touching a child row.
 -- ---------------------------------------------------------------------------
 
 -- You cannot drink more bottles than you bought. Without this the schema
@@ -227,6 +232,35 @@ BEGIN
     SELECT RAISE(ABORT, 'bottle drunk before it was purchased')
     WHERE NEW.consumed_date
           < (SELECT purchase_date FROM Wine WHERE wine_id = NEW.FK_wine_id);
+END;
+
+-- The same two rules, guarded from the Wine side.
+--
+-- Every trigger above watches Consumption and Tasting, which left the parent
+-- row unguarded: `UPDATE Wine SET bottles_purchased = 1` on a wine with five
+-- bottles already drunk was accepted and produced a remaining stock of -4 —
+-- exactly the state the stock triggers exist to prevent, reached from the
+-- other end. Editing purchase_date forward did the same to the date rule.
+CREATE TRIGGER trg_wine_update_stays_consistent
+BEFORE UPDATE ON Wine
+BEGIN
+    SELECT RAISE(ABORT, 'bottles purchased is below what has already been drunk')
+    WHERE NEW.bottles_purchased < (
+              SELECT COALESCE(SUM(bottles), 0) FROM Consumption
+              WHERE FK_wine_id = OLD.wine_id
+          );
+
+    SELECT RAISE(ABORT, 'purchase date is after a bottle was already drunk')
+    WHERE NEW.purchase_date > (
+              SELECT MIN(consumed_date) FROM Consumption
+              WHERE FK_wine_id = OLD.wine_id
+          );
+
+    SELECT RAISE(ABORT, 'purchase date is after the wine was already tasted')
+    WHERE NEW.purchase_date > (
+              SELECT MIN(tasting_date) FROM Tasting
+              WHERE FK_wine_id = OLD.wine_id
+          );
 END;
 
 -- And it cannot be tasted before it arrived either.
