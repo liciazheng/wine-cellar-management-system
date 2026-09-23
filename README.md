@@ -4,7 +4,7 @@
 
 A relational database for tracking a private wine collection — what is in the cellar, where it is stored, what it cost, and how each bottle tasted over time.
 
-SQLite, no dependencies. Clone it and open the `.db`.
+SQLite, no dependencies. Clone it and open `database/wine_collection.db` in any SQLite client.
 
 > **The data in this repository is entirely made up.** It is a demo dataset written to exercise the schema, not a record of a real collection. See [About the data](#about-the-data).
 
